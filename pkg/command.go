@@ -1,12 +1,15 @@
 package pkg
 
 import (
+	"fmt"
+	"github.com/docker/distribution/uuid"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"github.com/sirupsen/logrus"
+	"github.com/spf13/afero"
 )
 
 type Engine struct {
@@ -40,4 +43,32 @@ func (engine *Engine) doCopy(cmd *instructions.CopyCommand, img v1.Image) error 
 		img, err = mutate.AppendLayers(img, layer)
 	}
 	return err
+}
+
+func buildBlob(absCtx string, dest string, sources []string) string {
+	tb := NewTarball(absCtx)
+
+	var blob afero.File
+	var err error
+	id := uuid.Generate()
+	path := fmt.Sprintf("/tmp/%s.tar", id)
+	blob, err = fs.Create(path)
+	defer blob.Close()
+
+	var options []TarOption
+	err = tb.tar(blob, sources, options...)
+	if err != nil {
+		panic("")
+	}
+	blob.Close()
+
+	return path
+}
+
+func NewTarball(ctx string) *Tarball {
+	var options []TarOption
+	return &Tarball{
+		Root:    ctx,
+		Options: options,
+	}
 }
