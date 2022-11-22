@@ -10,10 +10,9 @@ import (
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"github.com/sirupsen/logrus"
 	"io"
-	"path/filepath"
 )
 
-func Run(buildFile io.Reader, buildCtx string, dst string, dryRun bool, tags ...string) error {
+func (engine *Engine) Build(cmdReader io.Reader, tag string, dryRun bool, tags ...string) error {
 	/* load crane shell
 	- rebase --from= --base=
 	- copy
@@ -33,14 +32,9 @@ func Run(buildFile io.Reader, buildCtx string, dst string, dryRun bool, tags ...
 	logrus.Debug(envHistory)
 
 	// var dockerfile string
-	stages, _, err := ParseDockerFile(buildFile)
+	stages, _, err := ParseDockerFile(cmdReader)
 	if err != nil {
 		panic(err)
-	}
-
-	buildCtx, err = filepath.Abs(buildCtx)
-	if err != nil {
-		return nil
 	}
 
 	for _, stage := range stages {
@@ -49,6 +43,10 @@ func Run(buildFile io.Reader, buildCtx string, dst string, dryRun bool, tags ...
 
 		baseRef := stage.BaseName
 		stageRef := stage.Name
+
+		engine.BuildContext[stageRef] = BuildContext{Type: ImageRef, Path: baseRef}
+
+		// TODO: validate base and tag here
 
 		logrus.Infof("base: %s, stage: %s", baseRef, stageRef)
 
@@ -73,9 +71,9 @@ func Run(buildFile io.Reader, buildCtx string, dst string, dryRun bool, tags ...
 			img = base
 		}
 
-		engine := Engine{
-			BuildCtx:  buildCtx,
-			LayerType: layerType,
+		// init the layer type
+		if engine.LayerType == "" {
+			engine.LayerType = layerType
 		}
 
 		for _, ins := range stage.Commands {
@@ -91,7 +89,10 @@ func Run(buildFile io.Reader, buildCtx string, dst string, dryRun bool, tags ...
 
 			case command.Copy:
 				copyCmd := ins.(*instructions.CopyCommand)
-				engine.doCopy(copyCmd, img)
+				err := engine.doCopy(copyCmd, img)
+				if err != nil {
+					return err
+				}
 				break
 			case command.Run:
 				// do not run in a daemon, overlay fs or any other isolation
@@ -103,6 +104,9 @@ func Run(buildFile io.Reader, buildCtx string, dst string, dryRun bool, tags ...
 				// and to support `+=`, we should be careful to merge original value and plus value.
 				// furthermore, we should record any ENV we meet to do the eval
 				// FIXME: no we use a `bash -c` command to help eval env
+				envCmd := ins.(*instructions.EnvCommand)
+				engine.doEnv(envCmd, img)
+				break
 			case command.Arg:
 				break
 			default:
@@ -116,12 +120,12 @@ func Run(buildFile io.Reader, buildCtx string, dst string, dryRun bool, tags ...
 	// push image
 
 	// if outFile != "" {
-	// 	if err := crane.Save(img, dst, outFile); err != nil {
+	// 	if err := crane.Save(img, tag, outFile); err != nil {
 	// 		return fmt.Errorf("writing output %q: %w", outFile, err)
 	// 	}
 	// } else {
 	if !dryRun {
-		push(img, dst)
+		push(img, tag)
 	}
 
 	return nil

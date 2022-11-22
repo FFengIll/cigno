@@ -1,51 +1,52 @@
 package pkg
 
 import (
+	"errors"
 	"fmt"
 	"github.com/docker/distribution/uuid"
-	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/mutate"
-	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/google/go-containerregistry/pkg/v1/types"
-	"github.com/moby/buildkit/frontend/dockerfile/instructions"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/afero"
 )
 
 type Engine struct {
-	BuildCtx  string
-	LayerType types.MediaType
+	BuildDir     string
+	LayerType    types.MediaType
+	BuildContext map[string]BuildContext
+	Bases        map[string]string
 }
 
-// doCopy
-// COPY --from=image /path1 /path2 --chown=xx:xx --chmod=xxx
-// COPY --from=image --base=image / /path2 --chown=xx:xx --chmod=xxx
-// for local file, archive it into a tarball and modify own / mod / root path
-func (engine *Engine) doCopy(cmd *instructions.CopyCommand, img v1.Image) error {
-	var err error
-	if cmd.From != "" {
-		// copy --from=another_image
-		panic("not implemented `COPY --from=xxx`")
+// BuildContext describe the context for `--from` and `FROM`
+type BuildContext struct {
+	Type refType
+	Path string
+}
 
-	} else {
-		// copy via local file system
+type refType string
 
-		// FIXME: for now, we do not extract special files, but copy each blob above base image (just like rebase)
-		tarPath := buildBlob(engine.BuildCtx, cmd.Dest(), cmd.Sources())
-		logrus.Infof("cached blob to: %s", tarPath)
+const (
+	ImageRef   refType = "image-ref"
+	TarballRef refType = "tarball-ref"
+	PathRef    refType = "path-ref"
+)
 
-		// for image file, pull and extract them if possible (only process annotated layers / blobs if possible)
+func (engine *Engine) getBase(orig string) (string, error) {
 
-		// append
-		var layer v1.Layer
-		layer, err = tarball.LayerFromFile(tarPath, tarball.WithMediaType(engine.LayerType))
-		// layer ,err = tarball.LayerFromOpener(w, tarball.WithMediaType(layerType))
-		img, err = mutate.AppendLayers(img, layer)
+	base, ok := engine.Bases[orig]
+	if ok {
+		return base, nil
 	}
-	return err
+	return "", errors.New(fmt.Sprintf("no such base for origal: %s", orig))
 }
 
-func buildBlob(absCtx string, dest string, sources []string) string {
+func (engine *Engine) getRef(orig string) BuildContext {
+	ref, ok := engine.BuildContext[orig]
+	if ok {
+		return ref
+	}
+	return BuildContext{Type: ImageRef, Path: orig}
+}
+
+func createBlob(absCtx string, dest string, sources []string) string {
 	tb := NewTarball(absCtx)
 
 	var blob afero.File
