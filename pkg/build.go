@@ -12,7 +12,30 @@ import (
 	"io"
 )
 
-func (engine *Engine) Build(cmdReader io.Reader, tag string, dryRun bool, tags ...string) error {
+type BuildOption func(img v1.Image, tag string) error
+
+func OutFileOption(outFile string) BuildOption {
+	return func(img v1.Image, tag string) error {
+		if outFile != "" {
+			if err := crane.Save(img, tag, outFile); err != nil {
+				return fmt.Errorf("writing output %q: %w", outFile, err)
+			}
+		}
+		return nil
+	}
+}
+
+func PushOption() BuildOption {
+	return func(img v1.Image, tag string) error {
+		err := push(img, tag)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+}
+
+func (engine *Engine) Build(cmdReader io.Reader, tag string, options ...BuildOption) error {
 	/* load crane shell
 	- rebase --from= --base=
 	- copy
@@ -44,12 +67,12 @@ func (engine *Engine) Build(cmdReader io.Reader, tag string, dryRun bool, tags .
 		baseRef := stage.BaseName
 		stageRef := stage.Name
 
-		engine.BuildContext[stageRef] = BuildContext{Type: ImageRef, Path: baseRef}
+		engine.AddImage(stageRef, baseRef)
+		logrus.Infof("base: %s, stage: %s", baseRef, stageRef)
 
 		// TODO: validate base and tag here
 
-		logrus.Infof("base: %s, stage: %s", baseRef, stageRef)
-
+		// doFrom
 		var options []crane.Option
 		base, err := crane.Pull(baseRef, options...)
 		if err != nil {
@@ -66,16 +89,12 @@ func (engine *Engine) Build(cmdReader io.Reader, tag string, dryRun bool, tags .
 			layerType = types.OCILayer
 		}
 
-		// only ready to interactive with commands
-		if len(stage.Commands) > 0 {
-			img = base
-		}
-
 		// init the layer type
 		if engine.LayerType == "" {
 			engine.LayerType = layerType
 		}
 
+		img = base
 		for _, ins := range stage.Commands {
 			// process instruction
 			name := ins.Name()
@@ -89,7 +108,7 @@ func (engine *Engine) Build(cmdReader io.Reader, tag string, dryRun bool, tags .
 
 			case command.Copy:
 				copyCmd := ins.(*instructions.CopyCommand)
-				err := engine.doCopy(copyCmd, img)
+				img, err = engine.doCopy(copyCmd, img)
 				if err != nil {
 					return err
 				}
@@ -105,7 +124,10 @@ func (engine *Engine) Build(cmdReader io.Reader, tag string, dryRun bool, tags .
 				// furthermore, we should record any ENV we meet to do the eval
 				// FIXME: no we use a `bash -c` command to help eval env
 				envCmd := ins.(*instructions.EnvCommand)
-				engine.doEnv(envCmd, img)
+				img, err = engine.doEnv(envCmd, img)
+				if err != nil {
+					return err
+				}
 				break
 			case command.Arg:
 				break
@@ -113,19 +135,15 @@ func (engine *Engine) Build(cmdReader io.Reader, tag string, dryRun bool, tags .
 				break
 			}
 		}
-
 	}
 	// verify the image if possible
 
 	// push image
-
-	// if outFile != "" {
-	// 	if err := crane.Save(img, tag, outFile); err != nil {
-	// 		return fmt.Errorf("writing output %q: %w", outFile, err)
-	// 	}
-	// } else {
-	if !dryRun {
-		push(img, tag)
+	for _, opt := range options {
+		err := opt(img, tag)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
