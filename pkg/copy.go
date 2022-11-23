@@ -15,7 +15,7 @@ import (
 // COPY --from=image /path1 /path2 --chown=xx:xx --chmod=xxx
 // COPY --from=image --base=image / /path2 --chown=xx:xx --chmod=xxx
 // for local file, archive it into a tarball and modify own / mod / root path
-func (engine *Engine) doCopy(cmd *instructions.CopyCommand, img v1.Image) error {
+func (engine *Engine) doCopy(cmd *instructions.CopyCommand, img v1.Image) (v1.Image, error) {
 	var err error
 	if cmd.From != "" {
 		// copy --from=another_image
@@ -34,11 +34,12 @@ func (engine *Engine) doCopy(cmd *instructions.CopyCommand, img v1.Image) error 
 			//
 			origImg, err := crane.Pull(orig, options...)
 			if err != nil {
-				return err
+				return nil, err
 			}
+
 			origMf, err := origImg.Manifest()
 			if err != nil {
-				return err
+				return nil, err
 			}
 
 			//
@@ -47,26 +48,51 @@ func (engine *Engine) doCopy(cmd *instructions.CopyCommand, img v1.Image) error 
 			base, ok = origMf.Annotations[specsv1.AnnotationBaseImageName]
 			if !ok {
 				base, err = engine.getBase(orig)
+				if err != nil {
+					return nil, err
+				}
 			}
 
 			//
 			baseImg, err := crane.Pull(base, options...)
+			if err != nil {
+				return nil, err
+			}
 
 			//
 			adds, err := subBaseImage(origImg, baseImg)
+			if err != nil {
+				return nil, err
+			}
 
 			//
 			img, err = mutate.Append(img, adds...)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			break
 		case TarballRef:
-			tarball := ref.Path
+			tarballPath := ref.Path
 
-			img, err = crane.Append(img, tarball)
+			var options []TarOption
+			options = append(options, ReplacePrefix("./", ""))
+			options = append(options, ReplacePrefix(cmd.Sources()[0], cmd.Dest()))
+			options = append(options, ReplacePrefix("/", ""))
+			blobPath, err := copyBlob("", tarballPath, options...)
 			if err != nil {
-				return err
+				panic(err)
+			}
+			logrus.Infof("cached blob to: %s", blobPath)
+
+			var layer v1.Layer
+			layer, err = tarball.LayerFromFile(blobPath, tarball.WithMediaType(engine.LayerType))
+			// layer ,err = tarball.LayerFromOpener(w, tarball.WithMediaType(layerType))
+			if err != nil {
+				return nil, err
+			}
+			img, err = mutate.AppendLayers(img, layer)
+			if err != nil {
+				return nil, err
 			}
 			break
 		}
@@ -86,7 +112,7 @@ func (engine *Engine) doCopy(cmd *instructions.CopyCommand, img v1.Image) error 
 		// layer ,err = tarball.LayerFromOpener(w, tarball.WithMediaType(layerType))
 		img, err = mutate.AppendLayers(img, layer)
 	}
-	return err
+	return img, err
 }
 
 func subBaseImage(orig v1.Image, base v1.Image) ([]mutate.Addendum, error) {
