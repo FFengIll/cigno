@@ -10,10 +10,10 @@ import (
 // doEnv
 // ENV OPT=/opt
 // ENV PATH=/opt:$PATH
-func (engine *Engine) doEnv(cmd *instructions.EnvCommand, img v1.Image) error {
+func (engine *Engine) doEnv(cmd *instructions.EnvCommand, img v1.Image) (v1.Image, error) {
 	cfg, err := img.ConfigFile()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	env := cfg.Config.Env
 
@@ -37,7 +37,7 @@ func (engine *Engine) doEnv(cmd *instructions.EnvCommand, img v1.Image) error {
 		cfg.Config.Env = append(cfg.Config.Env, pair.String())
 	}
 
-	return nil
+	return img, nil
 }
 
 func parseEnv(env []string) map[string]string {
