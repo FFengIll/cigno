@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
-	"devpod/cranit/pkg"
 	"fmt"
+	"io"
+
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
-	"io"
+
+	"devpod/cranit/pkg"
 )
 
 var buildCmd = &cobra.Command{
