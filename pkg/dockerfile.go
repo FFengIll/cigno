@@ -1,13 +1,13 @@
 package pkg
 
 import (
+	"io"
+
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
-	"io"
 )
 
 func ParseDockerFile(r io.Reader) ([]instructions.Stage, []instructions.ArgCommand, error) {
-
 	p, err := parser.Parse(r)
 	if err != nil {
 		return nil, nil, err
@@ -23,5 +23,4 @@ func ParseDockerFile(r io.Reader) ([]instructions.Stage, []instructions.ArgComma
 	// }
 
 	return stages, metaArgs, nil
-
 }
