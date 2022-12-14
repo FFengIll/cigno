@@ -10,24 +10,23 @@ https://unix.stackexchange.com/questions/281591/change-user-id-and-group-id-owne
 package pkg
 
 import (
+	"archive/tar"
 	"fmt"
-	"github.com/spf13/afero"
 	"io"
 	"os"
 	gopath "path"
 	"path/filepath"
 	"strings"
-)
 
-import (
-	"archive/tar"
+	"github.com/spf13/afero"
 )
 
 var fs = afero.NewOsFs()
 
 type Tarball struct {
-	Root    string
-	Options []TarOption
+	Root        string
+	PreOptions  []TarOption
+	PostOptions []TarOption
 }
 
 type TarOption func(hdr *tar.Header) error
@@ -73,9 +72,9 @@ func ChmodOption(mod int64) TarOption {
 }
 
 // tar walks paths to create tar file w
-func (t *Tarball) tar(tarFile io.Writer, paths []string, options ...TarOption) (err error) {
+func (t *Tarball) tar(w io.Writer, paths []string, options ...TarOption) (err error) {
 	// enable compression if file ends in .gz
-	tw := tar.NewWriter(tarFile)
+	tw := tar.NewWriter(w)
 	defer tw.Close()
 
 	for _, path := range paths {
@@ -103,20 +102,10 @@ func (t *Tarball) tar(tarFile io.Writer, paths []string, options ...TarOption) (
 				return err
 			}
 
-			// ignore the root (aka. dot now)
-			if relFilePath == "." {
-				return nil
-			}
-
-			// ignore symbol link
-			if finfo.Mode().Type()&os.ModeSymlink > 0 {
-				return nil
-			}
-
 			// ensure header has relative file path
 			hdr.Name = relFilePath
 
-			for _, opt := range t.Options {
+			for _, opt := range t.PreOptions {
 				err := opt(hdr)
 				if err != nil {
 					panic(err)
@@ -131,26 +120,41 @@ func (t *Tarball) tar(tarFile io.Writer, paths []string, options ...TarOption) (
 				}
 			}
 
-			if err := tw.WriteHeader(hdr); err != nil {
-				return err
-			}
-
-			// if path is a dir, dont continue
-			if finfo.Mode().IsDir() {
+			// ignore the root (aka. dot now)
+			if relFilePath == "." {
 				return nil
 			}
 
-			// add file to tar
-			srcFile, err := os.Open(file)
-			if err != nil {
-				return err
+			// if path is a dir, only header is written
+			if finfo.Mode().IsDir() {
+				if err := tw.WriteHeader(hdr); err != nil {
+					return err
+				}
+				return nil
 			}
-			defer srcFile.Close()
-			_, err = io.Copy(tw, srcFile)
-			if err != nil {
-				return err
+
+			// ignore symbol link
+			if finfo.Mode().Type()&os.ModeSymlink > 0 {
+				return nil
 			}
-			return nil
+
+			{
+				if err := tw.WriteHeader(hdr); err != nil {
+					return err
+				}
+
+				// add file to tar
+				srcFile, err := os.Open(file)
+				if err != nil {
+					return err
+				}
+				defer srcFile.Close()
+				_, err = io.Copy(tw, srcFile)
+				if err != nil {
+					return err
+				}
+				return nil
+			}
 		}
 
 		// build tar
@@ -159,6 +163,92 @@ func (t *Tarball) tar(tarFile io.Writer, paths []string, options ...TarOption) (
 			if err := filepath.Walk(absPath, walker); err != nil {
 				fmt.Printf("failed to add %s to tar: %s\n", path, err)
 			}
+		}
+	}
+
+	return nil
+}
+
+func (t *Tarball) copyFile(dst *tar.Writer, src *tar.Reader, hdr *tar.Header, options ...TarOption) error {
+	// default option modifier
+	for _, opt := range t.PreOptions {
+		err := opt(hdr)
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	// option modifier
+	for _, opt := range options {
+		err := opt(hdr)
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	// default option modifier
+	for _, opt := range t.PostOptions {
+		err := opt(hdr)
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	finfo := hdr.FileInfo()
+	if err := dst.WriteHeader(hdr); err != nil {
+		return err
+	}
+
+	// if path is a dir, dont continue
+	if finfo.Mode().IsDir() {
+		return nil
+	} else {
+		// copy
+		n, err := io.Copy(dst, src)
+		if err != nil {
+			return err
+		}
+
+		// validate
+		if n != finfo.Size() {
+			return fmt.Errorf("wrote %d, want %d", n, finfo.Size())
+		}
+	}
+
+	return nil
+}
+
+// Copy
+func (t *Tarball) Copy(dstName string, srcName string, options ...TarOption) (err error) {
+	srcFile, err := os.Open(srcName)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+	srcReader := tar.NewReader(srcFile)
+
+	dstFile, err := os.Create(dstName)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+	dstWriter := tar.NewWriter(dstFile)
+	// BUGFIX: must do close for tar writer which will do flush too.
+	defer dstWriter.Close()
+
+	// loop each segment
+	for {
+		hdr, err := srcReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		err = t.copyFile(dstWriter, srcReader, hdr, options...)
+		if err != nil {
+			return err
 		}
 	}
 
