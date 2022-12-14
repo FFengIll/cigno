@@ -1,10 +1,11 @@
 package pkg
 
 import (
-	v1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"os"
 	"strings"
+
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 )
 
 // doEnv

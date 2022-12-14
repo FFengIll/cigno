@@ -3,6 +3,8 @@ package pkg
 import (
 	"errors"
 	"fmt"
+	"os"
+
 	"github.com/docker/distribution/uuid"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/spf13/afero"
@@ -12,6 +14,8 @@ type Engine struct {
 	BuildDir     string
 	LayerType    types.MediaType
 	BuildContext map[string]*BuildContext
+	GlobalArg    map[string]string
+	LocalArgs    []map[string]string
 }
 
 // BuildContext describe the context for `--from` and `FROM`
@@ -29,6 +33,15 @@ const (
 	PathRef    refType = "path-ref"
 )
 
+func NewEngine() *Engine {
+	return &Engine{
+		BuildDir:     "",
+		BuildContext: map[string]*BuildContext{},
+		GlobalArg:    map[string]string{},
+		LocalArgs:    []map[string]string{},
+	}
+}
+
 func (engine *Engine) getBase(orig string) (string, error) {
 	item, ok := engine.BuildContext[orig]
 	if ok {
@@ -40,7 +53,8 @@ func (engine *Engine) getBase(orig string) (string, error) {
 func (engine *Engine) getRef(orig string) *BuildContext {
 	ref, ok := engine.BuildContext[orig]
 	if ok {
-		return ref
+		realPath := engine.expandEnv(ref.Path)
+		return &BuildContext{Type: ref.Type, Path: realPath}
 	}
 	return &BuildContext{Type: ImageRef, Path: orig}
 }
@@ -74,6 +88,16 @@ func (engine *Engine) AddImage(stage string, image string) {
 		Type: ImageRef,
 		Path: image,
 	}
+}
+
+func (engine *Engine) expandEnv(expr string) string {
+	expr = os.Expand(expr, func(s string) string {
+		if value, ok := engine.GlobalArg[s]; ok {
+			return value
+		}
+		return ""
+	})
+	return expr
 }
 
 func createBlob(absCtx string, dest string, sources []string) string {
