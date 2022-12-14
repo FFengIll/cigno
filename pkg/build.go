@@ -1,7 +1,10 @@
 package pkg
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+
 	"github.com/google/go-containerregistry/pkg/crane"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
@@ -9,13 +12,27 @@ import (
 	"github.com/moby/buildkit/frontend/dockerfile/command"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"github.com/sirupsen/logrus"
-	"io"
 )
 
-type BuildOption func(img v1.Image, tag string) error
+type BuildOption func(img v1.Image) error
 
-func OutFileOption(outFile string) BuildOption {
-	return func(img v1.Image, tag string) error {
+func prettyPrint(data any) {
+	bs, _ := json.MarshalIndent(data, "", "  ")
+	fmt.Println(string(bs))
+}
+
+func PrintHistoryOption() BuildOption {
+	return func(img v1.Image) error {
+		manifest, _ := img.Manifest()
+		config, _ := img.ConfigFile()
+		prettyPrint(manifest)
+		prettyPrint(config)
+		return nil
+	}
+}
+
+func OutFileOption(outFile string, tag string) BuildOption {
+	return func(img v1.Image) error {
 		if outFile != "" {
 			if err := crane.Save(img, tag, outFile); err != nil {
 				return fmt.Errorf("writing output %q: %w", outFile, err)
@@ -25,8 +42,8 @@ func OutFileOption(outFile string) BuildOption {
 	}
 }
 
-func PushOption() BuildOption {
-	return func(img v1.Image, tag string) error {
+func PushOption(tag string) BuildOption {
+	return func(img v1.Image) error {
 		err := push(img, tag)
 		if err != nil {
 			return err
@@ -35,7 +52,7 @@ func PushOption() BuildOption {
 	}
 }
 
-func (engine *Engine) Build(cmdReader io.Reader, tag string, options ...BuildOption) error {
+func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 	/* load crane shell
 	- rebase --from= --base=
 	- copy
@@ -55,26 +72,34 @@ func (engine *Engine) Build(cmdReader io.Reader, tag string, options ...BuildOpt
 	logrus.Debug(envHistory)
 
 	// var dockerfile string
-	stages, _, err := ParseDockerFile(cmdReader)
+	stages, globalArgCmds, err := ParseDockerFile(cmdReader)
 	if err != nil {
 		panic(err)
+	}
+
+	for _, cmd := range globalArgCmds {
+		for _, arg := range cmd.Args {
+			engine.withGlobalArg(arg.Key, arg.ValueString())
+		}
 	}
 
 	for _, stage := range stages {
 		// var base v1.Image
 		// var err error
+		engine.AllocLocalArgs()
 
 		baseRef := stage.BaseName
 		stageRef := stage.Name
 
 		engine.AddImage(stageRef, baseRef)
-		logrus.Infof("base: %s, stage: %s", baseRef, stageRef)
+		logrus.WithField("base", baseRef).WithField("stage", stageRef).Infof("stage")
 
 		// TODO: validate base and tag here
+		realBaseRef := engine.expandEnv(baseRef)
 
 		// doFrom
 		var options []crane.Option
-		base, err := crane.Pull(baseRef, options...)
+		base, err := crane.Pull(realBaseRef, options...)
 		if err != nil {
 			return fmt.Errorf("pulling %s: %s", baseRef, err)
 		}
@@ -93,6 +118,8 @@ func (engine *Engine) Build(cmdReader io.Reader, tag string, options ...BuildOpt
 		if engine.LayerType == "" {
 			engine.LayerType = layerType
 		}
+
+		engine.AllocLocalArgs()
 
 		img = base
 		for _, ins := range stage.Commands {
@@ -130,6 +157,8 @@ func (engine *Engine) Build(cmdReader io.Reader, tag string, options ...BuildOpt
 				}
 				break
 			case command.Arg:
+				argCmd := ins.(*instructions.ArgCommand)
+				img, err = engine.doArg(argCmd, img)
 				break
 			default:
 				break
@@ -140,7 +169,7 @@ func (engine *Engine) Build(cmdReader io.Reader, tag string, options ...BuildOpt
 
 	// push image
 	for _, opt := range options {
-		err := opt(img, tag)
+		err := opt(img)
 		if err != nil {
 			return err
 		}
