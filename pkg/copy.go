@@ -2,6 +2,7 @@ package pkg
 
 import (
 	"fmt"
+
 	"github.com/google/go-containerregistry/pkg/crane"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
@@ -18,85 +19,7 @@ import (
 func (engine *Engine) doCopy(cmd *instructions.CopyCommand, img v1.Image) (v1.Image, error) {
 	var err error
 	if cmd.From != "" {
-		// copy --from=another_image
-		var options []crane.Option
-
-		// diff image with base
-		// copy the top layers upon base, aka rebase
-		// TODO: validate first
-		orig := cmd.From
-		ref := engine.getRef(orig)
-
-		switch ref.Type {
-		case ImageRef:
-			orig = ref.Path
-
-			//
-			origImg, err := crane.Pull(orig, options...)
-			if err != nil {
-				return nil, err
-			}
-
-			origMf, err := origImg.Manifest()
-			if err != nil {
-				return nil, err
-			}
-
-			//
-			var base string
-			var ok bool
-			base, ok = origMf.Annotations[specsv1.AnnotationBaseImageName]
-			if !ok {
-				base, err = engine.getBase(orig)
-				if err != nil {
-					return nil, err
-				}
-			}
-
-			//
-			baseImg, err := crane.Pull(base, options...)
-			if err != nil {
-				return nil, err
-			}
-
-			//
-			adds, err := subBaseImage(origImg, baseImg)
-			if err != nil {
-				return nil, err
-			}
-
-			//
-			img, err = mutate.Append(img, adds...)
-			if err != nil {
-				return nil, err
-			}
-			break
-		case TarballRef:
-			tarballPath := ref.Path
-
-			var options []TarOption
-			options = append(options, ReplacePrefix("./", ""))
-			options = append(options, ReplacePrefix(cmd.Sources()[0], cmd.Dest()))
-			options = append(options, ReplacePrefix("/", ""))
-			blobPath, err := copyBlob("", tarballPath, options...)
-			if err != nil {
-				panic(err)
-			}
-			logrus.Infof("cached blob to: %s", blobPath)
-
-			var layer v1.Layer
-			layer, err = tarball.LayerFromFile(blobPath, tarball.WithMediaType(engine.LayerType))
-			// layer ,err = tarball.LayerFromOpener(w, tarball.WithMediaType(layerType))
-			if err != nil {
-				return nil, err
-			}
-			img, err = mutate.AppendLayers(img, layer)
-			if err != nil {
-				return nil, err
-			}
-			break
-		}
-
+		return engine.doCopyFrom(cmd, img)
 	} else {
 		// copy via local file system
 
@@ -113,6 +36,88 @@ func (engine *Engine) doCopy(cmd *instructions.CopyCommand, img v1.Image) (v1.Im
 		img, err = mutate.AppendLayers(img, layer)
 	}
 	return img, err
+}
+
+// copy --from=another_context
+func (engine *Engine) doCopyFrom(cmd *instructions.CopyCommand, img v1.Image) (v1.Image, error) {
+	var options []crane.Option
+
+	// diff image with base
+	// copy the top layers upon base, aka rebase
+	// TODO: validate first
+	orig := cmd.From
+	ref := engine.getRef(orig)
+
+	switch ref.Type {
+	case ImageRef:
+		orig = ref.Path
+
+		//
+		origImg, err := crane.Pull(orig, options...)
+		if err != nil {
+			return nil, err
+		}
+
+		origMf, err := origImg.Manifest()
+		if err != nil {
+			return nil, err
+		}
+
+		//
+		var base string
+		var ok bool
+		base, ok = origMf.Annotations[specsv1.AnnotationBaseImageName]
+		if !ok {
+			base, err = engine.getBase(orig)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		//
+		baseImg, err := crane.Pull(base, options...)
+		if err != nil {
+			return nil, err
+		}
+
+		//
+		adds, err := subBaseImage(origImg, baseImg)
+		if err != nil {
+			return nil, err
+		}
+
+		//
+		img, err = mutate.Append(img, adds...)
+		if err != nil {
+			return nil, err
+		}
+		break
+	case TarballRef:
+		tarballPath := ref.Path
+
+		var options []TarOption
+		options = append(options, ReplacePrefix("./", ""))
+		options = append(options, ReplacePrefix(cmd.Sources()[0], cmd.Dest()))
+		options = append(options, ReplacePrefix("/", ""))
+		blobPath, err := copyBlob("", tarballPath, options...)
+		if err != nil {
+			panic(err)
+		}
+		logrus.Infof("cached blob to: %s", blobPath)
+
+		var layer v1.Layer
+		layer, err = tarball.LayerFromFile(blobPath, tarball.WithMediaType(engine.LayerType))
+		// layer ,err = tarball.LayerFromOpener(w, tarball.WithMediaType(layerType))
+		if err != nil {
+			return nil, err
+		}
+		img, err = mutate.AppendLayers(img, layer)
+		if err != nil {
+			return nil, err
+		}
+		break
+	}
+	return img, nil
 }
 
 func subBaseImage(orig v1.Image, base v1.Image) ([]mutate.Addendum, error) {
