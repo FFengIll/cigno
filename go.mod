@@ -1,4 +1,4 @@
-module devpod/cranit
+module devpod/cigno
 
 go 1.18
 
