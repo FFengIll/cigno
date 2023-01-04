@@ -1,14 +1,14 @@
-package main
+package cmd
 
 import (
 	"bytes"
-	"fmt"
+	"github.com/sirupsen/logrus"
 	"io"
 
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 
-	"devpod/cranit/pkg"
+	"devpod/cigno/pkg"
 )
 
 var buildCmd = &cobra.Command{
@@ -16,8 +16,8 @@ var buildCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		tag, _ := cmd.Flags().GetString("tag")
 		dockerfile, _ := cmd.Flags().GetString("dockerfile")
-		fmt.Println(tag)
-		fmt.Println(dockerfile)
+		logrus.Info(tag)
+		logrus.Info(dockerfile)
 
 		// load dockerfile
 		fs := afero.NewOsFs()
