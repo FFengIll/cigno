@@ -23,6 +23,7 @@ var (
 	outFile        = ""
 	dryRun         = false
 	validate       = false
+	verbose        = false
 )
 
 var rootCmd = cobra.Command{
