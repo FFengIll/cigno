@@ -9,6 +9,8 @@ import (
 
 	"github.com/docker/distribution/uuid"
 	"github.com/google/go-containerregistry/pkg/v1/types"
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/afero"
 )
 
@@ -17,7 +19,10 @@ type Engine struct {
 	LayerType    types.MediaType
 	BuildContext map[string]*BuildContext
 	GlobalArg    map[string]string
-	LocalArgs    []map[string]string
+	LocalArgs    map[*instructions.Stage]map[string]string
+	Env          map[*instructions.Stage]map[string]string
+
+	Log *logrus.Logger
 }
 
 // BuildContext describe the context for `--from` and `FROM`
@@ -40,8 +45,14 @@ func NewEngine() *Engine {
 		BuildDir:     "",
 		BuildContext: map[string]*BuildContext{},
 		GlobalArg:    map[string]string{},
-		LocalArgs:    []map[string]string{},
+		LocalArgs:    map[*instructions.Stage]map[string]string{},
+		Env:          map[*instructions.Stage]map[string]string{},
+		Log:          logrus.New(),
 	}
+}
+
+func (engine *Engine) WithLog(log *logrus.Logger) {
+	engine.Log = log
 }
 
 func (engine *Engine) getBase(orig string) (string, error) {
@@ -55,7 +66,7 @@ func (engine *Engine) getBase(orig string) (string, error) {
 func (engine *Engine) getRef(orig string) *BuildContext {
 	ref, ok := engine.BuildContext[orig]
 	if ok {
-		realPath := engine.expandEnv(ref.Path)
+		realPath := engine.expandGlobalArg(ref.Path)
 		return &BuildContext{Type: ref.Type, Path: realPath}
 	}
 	return &BuildContext{Type: ImageRef, Path: orig}
@@ -85,14 +96,14 @@ func (engine *Engine) AddFolder(name string, path string) {
 	}
 }
 
-func (engine *Engine) AddContext(stage string, image string) {
-	engine.BuildContext[stage] = &BuildContext{
+func (engine *Engine) AddContext(name string, image string) {
+	engine.BuildContext[name] = &BuildContext{
 		Type: ImageRef,
 		Path: image,
 	}
 }
 
-func (engine *Engine) expandEnv(expr string) string {
+func (engine *Engine) expandGlobalArg(expr string) string {
 	expr = os.Expand(expr, func(s string) string {
 		if value, ok := engine.GlobalArg[s]; ok {
 			return value
@@ -100,6 +111,28 @@ func (engine *Engine) expandEnv(expr string) string {
 		return ""
 	})
 	return expr
+}
+
+func (engine *Engine) expandArg(stage *instructions.Stage, expr string) (string, bool) {
+	ok := false
+	expr = os.Expand(expr, func(s string) string {
+		var value string
+		if value, ok = engine.LocalArgs[stage][s]; ok {
+			return value
+		}
+
+		if value, ok = engine.GlobalArg[s]; ok {
+			return value
+		}
+
+		return fmt.Sprintf("$%s", s)
+	})
+	return expr, ok
+}
+
+func (engine *Engine) AllocLocalEnv(stage *instructions.Stage, env []string) {
+	kv := parseEnv(env)
+	engine.Env[stage] = kv
 }
 
 func createBlob(absCtx string, dest string, sources []string) string {

@@ -88,23 +88,30 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 	for _, stage := range stages {
 		// var base v1.Image
 		// var err error
-		engine.AllocLocalArgs()
+		engine.AllocLocalArgs(&stage)
 
-		baseRef := stage.BaseName
-		stageRef := stage.Name
+		stageImage := stage.BaseName
+		stageName := stage.Name
 
-		engine.AddContext(stageRef, baseRef)
-		logrus.WithField("base", baseRef).WithField("stage", stageRef).Infof("stage")
+		engine.AddContext(stageName, stageImage)
+		logrus.WithField("stage image", stageImage).WithField("stage name", stageName).Infof("stage")
 
 		// TODO: validate base and tag here
-		realBaseRef := engine.expandEnv(baseRef)
+		basePath, _ := engine.expandArg(&stage, stageImage)
 
 		// doFrom
 		var options []crane.Option
-		base, err := crane.Pull(realBaseRef, options...)
+		base, err := crane.Pull(basePath, options...)
 		if err != nil {
-			return fmt.Errorf("pulling %s: %s", baseRef, err)
+			return fmt.Errorf("pulling %s: %s", stageImage, err)
 		}
+
+		cfg, err := base.ConfigFile()
+		if err != nil {
+			return err
+		}
+		env := cfg.Config.Env
+		engine.AllocLocalEnv(&stage, env)
 
 		// check media type
 		baseMediaType, err := base.MediaType()
@@ -120,8 +127,6 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 		if engine.LayerType == "" {
 			engine.LayerType = layerType
 		}
-
-		engine.AllocLocalArgs()
 
 		img = base
 		for _, ins := range stage.Commands {
@@ -153,14 +158,14 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 				// furthermore, we should record any ENV we meet to do the eval
 				// FIXME: no we use a `bash -c` command to help eval env
 				envCmd := ins.(*instructions.EnvCommand)
-				img, err = engine.doEnv(envCmd, img)
+				img, err = engine.doEnv(&stage, envCmd, img)
 				if err != nil {
 					return err
 				}
 				break
 			case command.Arg:
 				argCmd := ins.(*instructions.ArgCommand)
-				img, err = engine.doArg(argCmd, img)
+				img, err = engine.doArg(&stage, argCmd, img)
 				break
 			default:
 				break

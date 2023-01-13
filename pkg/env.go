@@ -1,50 +1,57 @@
 package pkg
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
+	"github.com/sirupsen/logrus"
 )
 
-// doEnv
+// doEnv will update env with expr support
+// e.g.
 // ENV OPT=/opt
 // ENV PATH=/opt:$PATH
-func (engine *Engine) doEnv(cmd *instructions.EnvCommand, img v1.Image) (v1.Image, error) {
-	cfg, err := img.ConfigFile()
-	if err != nil {
-		return nil, err
-	}
-	env := cfg.Config.Env
-
-	parsedEnv := parseEnv(env)
+func (engine *Engine) doEnv(stage *instructions.Stage, cmd *instructions.EnvCommand, img v1.Image) (v1.Image, error) {
+	var env = engine.Env[stage]
 
 	for _, kv := range cmd.Env {
 		key := kv.Key
-		value := kv.Value
-		if _, ok := parsedEnv[key]; ok {
-			value = os.Expand(value, func(s string) string {
-				if v, ok := parsedEnv[s]; ok {
-					return v
-				} else {
-					return ""
-				}
-			})
+		expr := kv.Value
 
-		}
+		// expand from arg at first, then from env
+		value, _ := engine.expandArg(stage, expr)
+		value, _ = expandEnv(env, value)
 
-		pair := instructions.KeyValuePair{Key: key, Value: value}
-		cfg.Config.Env = append(cfg.Config.Env, pair.String())
+		env[key] = value
+		logrus.WithField("key", key).WithField("value", value).Debug("ENV")
 	}
 
 	return img, nil
 }
 
+func expandEnv(env map[string]string, expr string) (string, bool) {
+	var ok bool
+	res := os.Expand(expr, func(s string) string {
+		var v string
+		if v, ok = env[s]; ok {
+			return v
+		}
+		return fmt.Sprintf("$%s", s)
+	})
+	return res, ok
+}
+
 func parseEnv(env []string) map[string]string {
 	parsed := map[string]string{}
-	for idx := range env {
-		items := strings.SplitN(env[idx], "=", 1)
+	for _, line := range env {
+		items := strings.SplitN(line, "=", 2)
+		if len(items) < 2 {
+			logrus.WithField("expr", line).Error("ENV expr invalid")
+			continue
+		}
 		parsed[items[0]] = items[1]
 	}
 
