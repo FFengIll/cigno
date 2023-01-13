@@ -24,9 +24,9 @@ func prettyPrint(data any) {
 func PrintHistoryOption() BuildOption {
 	return func(img v1.Image) error {
 		manifest, _ := img.Manifest()
-		config, _ := img.ConfigFile()
-		prettyPrint(manifest)
-		prettyPrint(config)
+		for _, layer := range manifest.Layers {
+			prettyPrint(layer)
+		}
 		return nil
 	}
 }
@@ -42,11 +42,13 @@ func OutFileOption(outFile string, tag string) BuildOption {
 	}
 }
 
-func PushOption(tag string) BuildOption {
+func PushOption(tags []string) BuildOption {
 	return func(img v1.Image) error {
-		err := push(img, tag)
-		if err != nil {
-			return err
+		for _, tag := range tags {
+			err := push(img, tag)
+			if err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -91,7 +93,7 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 		baseRef := stage.BaseName
 		stageRef := stage.Name
 
-		engine.AddImage(stageRef, baseRef)
+		engine.AddContext(stageRef, baseRef)
 		logrus.WithField("base", baseRef).WithField("stage", stageRef).Infof("stage")
 
 		// TODO: validate base and tag here
