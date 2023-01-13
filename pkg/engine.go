@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/docker/distribution/uuid"
 	"github.com/google/go-containerregistry/pkg/v1/types"
@@ -83,7 +85,7 @@ func (engine *Engine) AddFolder(name string, path string) {
 	}
 }
 
-func (engine *Engine) AddImage(stage string, image string) {
+func (engine *Engine) AddContext(stage string, image string) {
 	engine.BuildContext[stage] = &BuildContext{
 		Type: ImageRef,
 		Path: image,
@@ -111,6 +113,52 @@ func createBlob(absCtx string, dest string, sources []string) string {
 	defer blob.Close()
 
 	var options []TarOption
+	options = append(options, ReplacePrefixPath("./", ""))
+	for _, src := range sources {
+		options = append(options, ReplacePrefixPath(src, dest))
+	}
+	options = append(options, ReplacePrefixPath("/", ""))
+
+	switch len(sources) {
+	case 1:
+		// ref: https://docs.docker.com/engine/reference/builder/#copy
+		// for source
+		source := sources[0]
+		fs := afero.NewOsFs()
+		if ok, _ := afero.IsDir(fs, source); ok {
+			if !strings.HasSuffix(dest, "/") {
+				dest += "/"
+			}
+			if !strings.HasSuffix(source, "/") {
+				source += "/"
+			}
+			options = append(options, ReplacePrefixPath(source, dest))
+			sources[0] = source
+		} else {
+			if strings.HasSuffix(dest, "/") {
+				ReplacePrefixPath(filepath.Dir(source)+"/", dest)
+			} else {
+				ReplacePrefixPath(source, dest)
+			}
+		}
+		break
+	default:
+		if !strings.HasSuffix(dest, "/") {
+			dest += "/"
+		}
+		for _, src := range sources {
+			fs := afero.NewOsFs()
+			if ok, _ := afero.IsDir(fs, src); ok {
+				if !strings.HasSuffix(src, "/") {
+					src += "/"
+				}
+				ReplacePrefixPath(src, dest)
+			} else {
+				ReplacePrefixPath(filepath.Dir(src)+"/", dest)
+			}
+		}
+	}
+
 	err = tb.tar(blob, sources, options...)
 	if err != nil {
 		panic("")
