@@ -9,6 +9,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	specsv1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
 
@@ -70,14 +71,14 @@ func (engine *Engine) doCopyFrom(cmd *instructions.CopyCommand, img v1.Image) (v
 		if !ok {
 			base, err = engine.getBase(orig)
 			if err != nil {
-				return nil, err
+				return nil, errors.Wrap(err, "no base image")
 			}
 		}
 
 		//
 		baseImg, err := crane.Pull(base, options...)
 		if err != nil {
-			return nil, err
+			return nil, errors.Wrap(err, "failed to pull base image")
 		}
 
 		//
@@ -96,9 +97,9 @@ func (engine *Engine) doCopyFrom(cmd *instructions.CopyCommand, img v1.Image) (v
 		tarballPath := ref.Path
 
 		var options []TarOption
-		options = append(options, ReplacePrefix("./", ""))
-		options = append(options, ReplacePrefix(cmd.Sources()[0], cmd.Dest()))
-		options = append(options, ReplacePrefix("/", ""))
+		options = append(options, ReplacePrefixPath("./", ""))
+		options = append(options, ReplacePrefixPath(cmd.Sources()[0], cmd.Dest()))
+		options = append(options, ReplacePrefixPath("/", ""))
 		blobPath, err := copyBlob("", tarballPath, options...)
 		if err != nil {
 			panic(err)

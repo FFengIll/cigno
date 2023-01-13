@@ -38,12 +38,15 @@ func PathPrefixOption(prefix string) TarOption {
 	}
 }
 
-func ReplacePrefix(old, new string) TarOption {
+// ReplacePrefixPath will replace the path with new one which is required
+func ReplacePrefixPath(old, new string) TarOption {
 	return func(hdr *tar.Header) error {
 		name := hdr.Name
-		name = strings.TrimPrefix(name, old)
-		name = gopath.Join(new, name)
-		hdr.Name = name
+		if strings.HasPrefix(name, old) {
+			name = strings.TrimPrefix(name, old)
+			name = gopath.Join(new, name)
+			hdr.Name = name
+		}
 		return nil
 	}
 }
@@ -79,8 +82,9 @@ func (t *Tarball) tar(w io.Writer, paths []string, options ...TarOption) (err er
 
 	for _, path := range paths {
 		// path must under build context
-		absPath, _ := filepath.Abs(filepath.Join(t.Root, path))
-		if !strings.HasPrefix(absPath, t.Root) {
+		rootPath, _ := filepath.Abs(t.Root)
+		absPath, _ := filepath.Abs(path)
+		if !strings.HasPrefix(absPath, rootPath) {
 			panic("no such file in buildpath")
 		}
 
@@ -97,7 +101,7 @@ func (t *Tarball) tar(w io.Writer, paths []string, options ...TarOption) (err er
 			}
 
 			var relFilePath string
-			relFilePath, err = filepath.Rel(absPath, file)
+			relFilePath, err = filepath.Rel(rootPath, file)
 			if err != nil {
 				return err
 			}
