@@ -94,10 +94,12 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 		stageName := stage.Name
 
 		engine.AddContext(stageName, stageImage)
-		logrus.WithField("stage image", stageImage).WithField("stage name", stageName).Infof("stage")
+		logrus.WithField("stage image", stageImage).WithField("stage name", stageName).Infof("STAGE")
 
 		// TODO: validate base and tag here
 		basePath, _ := engine.expandArg(&stage, stageImage)
+
+		logrus.WithField("stage image", basePath).Info("STAGE")
 
 		// doFrom
 		var options []crane.Option
