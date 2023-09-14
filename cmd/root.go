@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	"devpod/cigno/pkg"
+
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
-
-	"devpod/cigno/pkg"
 )
 
 var (
@@ -96,7 +96,7 @@ var rootCmd = cobra.Command{
 		} else if dryRun {
 			// nothing for now
 		} else {
-			options = append(options, pkg.PushOption(tag))
+			options = append(options, pkg.PushOption([]string{tag}))
 		}
 
 		err = engine.Build(
@@ -117,13 +117,14 @@ func init() {
 	rootCmd.AddCommand(buildCmd)
 
 	flags := rootCmd.PersistentFlags()
-	flags.StringVarP(&dockerfile, "dockerfile", "f", dockerfile, "dockerfile")
-	flags.StringVarP(&buildDir, "context", "c", buildDir, "")
-	flags.StringVarP(&tag, "tag", "t", "", "")
-	flags.BoolVar(&dryRun, "dry-run", false, "")
-	flags.BoolVarP(&validate, "validate", "v", false, "")
-	flags.StringArrayVar(&imageBaseArray, "image-base", []string{}, "")
-	flags.StringArrayVar(&tarballArray, "tarball", []string{}, "")
-	flags.StringArrayVar(&folderArray, "folder", []string{}, "")
-	flags.StringVarP(&outFile, "output-file", "o", "", "")
+	flags.BoolVar(&verbose, "verbose", false, "run with verbose information")
+	// flags.StringVarP(&dockerfile, "dockerfile", "f", dockerfile, "dockerfile")
+	// flags.StringVarP(&buildDir, "context", "c", buildDir, "")
+	// flags.StringVarP(&tag, "tag", "t", "", "")
+	// flags.BoolVar(&dryRun, "dry-run", false, "")
+	// flags.BoolVarP(&validate, "validate", "v", false, "")
+	// flags.StringArrayVar(&imageBaseArray, "image-base", []string{}, "")
+	// flags.StringArrayVar(&tarballArray, "tarball", []string{}, "")
+	// flags.StringArrayVar(&folderArray, "folder", []string{}, "")
+	// flags.StringVarP(&outFile, "output-file", "o", "", "")
 }

@@ -3,13 +3,16 @@ package pkg
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/google/go-containerregistry/pkg/crane"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/moby/buildkit/frontend/dockerfile/command"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
+	specsv1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/sirupsen/logrus"
 )
 
@@ -71,8 +74,7 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 		if err != nil {
 			return err
 		}
-		env := cfg.Config.Env
-		engine.AllocLocalEnv(&stage, env)
+		engine.AllocLocalEnv(&stage, cfg.Config.Env)
 
 		// check media type
 		baseMediaType, err := base.MediaType()
@@ -132,6 +134,41 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 				break
 			}
 		}
+
+		cfg = cfg.DeepCopy()
+
+		// Set labels.
+		if cfg.Config.Labels == nil {
+			cfg.Config.Labels = map[string]string{}
+		}
+
+		// FIXME: we can not add history for current API
+		// for _, ins := range stage.Commands {
+		// 	add := mutate.Addendum{
+		// 		History: v1.History{
+		// 			CreatedBy: ins.Name(),
+		// 		},
+		// 	}
+		// 	img, err = mutate.Append(img, add)
+		// 	if err != nil {
+		// 		return err
+		// 	}
+		// }
+
+		// Update annotations.
+		annotations := map[string]string{}
+		baseDigest, _ := img.Digest()
+		baseName := basePath
+		annotations[specsv1.AnnotationBaseImageName] = baseName
+		annotations[specsv1.AnnotationBaseImageDigest] = baseDigest.String()
+		img = mutate.Annotations(img, annotations).(v1.Image)
+
+		// Update env vars.
+		env := engine.Env[&stage]
+		if err := setEnvVars(cfg, env); err != nil {
+			return err
+		}
+		img, err = mutate.Config(img, cfg.Config)
 	}
 	// verify the image if possible
 
@@ -143,6 +180,34 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 		}
 	}
 
+	return nil
+}
+
+// setEnvVars override envvars in a config
+func setEnvVars(cfg *v1.ConfigFile, envVars map[string]string) error {
+	newEnv := make([]string, 0, len(cfg.Config.Env))
+	for _, old := range cfg.Config.Env {
+		split := strings.SplitN(old, "=", 2)
+		if len(split) != 2 {
+			return fmt.Errorf("invalid key value pair in config: %s", old)
+		}
+		// keep order so override if specified again
+		oldKey := split[0]
+		if v, ok := envVars[oldKey]; ok {
+			newEnv = append(newEnv, fmt.Sprintf("%s=%s", oldKey, v))
+			delete(envVars, oldKey)
+		} else {
+			newEnv = append(newEnv, old)
+		}
+	}
+	isWindows := cfg.OS == "windows"
+	for k, v := range envVars {
+		if isWindows {
+			k = strings.ToUpper(k)
+		}
+		newEnv = append(newEnv, fmt.Sprintf("%s=%s", k, v))
+	}
+	cfg.Config.Env = newEnv
 	return nil
 }
 

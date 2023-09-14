@@ -29,6 +29,7 @@ func (engine *Engine) doEnv(stage *instructions.Stage, cmd *instructions.EnvComm
 		logrus.WithField("key", key).WithField("value", value).Debug("ENV")
 	}
 
+	// FIXME: do env mutate into image config later
 	return img, nil
 }
 
