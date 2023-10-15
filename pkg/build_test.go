@@ -21,28 +21,6 @@ FROM alpine:3.16.2 as base
 COPY --from=tarball . /test/
 `
 
-const testFabricCommand = `
-# GLOBAL ARGS
-ARG DEVPOD_BIN_IMAGE
-ARG IDE_IMAGE
-
-ARG STACK_IMAGE
-
-# FEATURE: install-devpod-bin-image
-FROM ${DEVPOD_BIN_IMAGE} as devpod
-
-# FEATURE: install-ide-image
-FROM ${IDE_IMAGE} as ide
-
-# CURRENT IMAGE
-FROM ${STACK_IMAGE} as base
-
-COPY --from=devpod --chown=root:root /usr/lib/devpod/bin/ /usr/lib/devpod/bin/
-COPY --from=devpod --chown=root:root /usr/lib/devpod/config/ /usr/lib/devpod/config/
-COPY --from=ide --chown=root:root /usr/lib/ide /usr/lib/ide
-EOF
-`
-
 const (
 	buildDir    = "./test/data"
 	outFile     = "./test/output/test.tar"

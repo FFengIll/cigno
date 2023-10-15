@@ -15,7 +15,7 @@ func TestTarball_tartar(t1 *testing.T) {
 
 	var options []TarOption
 	options = append(options, ChownOption(0, 0))
-	options = append(options, ChownNameOption("devpod", "devpod"))
+	options = append(options, ChownNameOption("root", "root"))
 	options = append(options, PathPrefixOption("usr/local/tmp/"))
 	options = append(options, ReplacePrefixPath("usr/local/test/", "usr/"))
 
@@ -65,7 +65,7 @@ func TestTarball_Copy(t *testing.T) {
 
 	var options []TarOption
 	options = append(options, ChownOption(0, 0))
-	options = append(options, ChownNameOption("devpod", "devpod"))
+	options = append(options, ChownNameOption("root", "root"))
 	options = append(options, PathPrefixOption("usr/local/tmp/"))
 	options = append(options, ReplacePrefixPath("usr/local/test/", "usr/"))
 

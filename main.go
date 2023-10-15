@@ -1,7 +1,7 @@
 package main
 
 import (
-	"devpod/cigno/cmd"
+	"cigno/cmd"
 )
 
 func main() {

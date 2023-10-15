@@ -15,7 +15,7 @@ Aka.
 4. crane: manual operation with remote image registry (via. /api/v2)
 
 `crane` may be the best choice for now, since
-- we always use `artifact` for many components / modules (e.g. ide, devpod-bin).
+- we always use `artifact` for many components / modules (e.g. ide, xxx-bin).
 - we always use `ci` pipeline to build (aka. landun stream) things in container.
 - we always use the same `base image` in a long term.
 - we always `build image` with little runtime process or edit (e.g. tee, sed, wget) on files/folders in scope of control.

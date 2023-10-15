@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"devpod/cigno/pkg"
+	"cigno/pkg"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/afero"

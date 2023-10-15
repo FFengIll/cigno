@@ -1,4 +1,4 @@
-module devpod/cigno
+module cigno
 
 go 1.20
 
