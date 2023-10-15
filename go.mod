@@ -1,6 +1,6 @@
 module devpod/cigno
 
-go 1.18
+go 1.20
 
 // These match the docker/docker's dependencies configured in:
 // https://github.com/moby/moby/blob/v20.10.12/vendor.conf
@@ -14,7 +14,7 @@ require (
 	github.com/docker/docker v20.10.14+incompatible // indirect
 	github.com/google/go-containerregistry v0.8.1-0.20220507185902-82405e5dfa82
 	github.com/moby/buildkit v0.9.3
-	github.com/pkg/errors v0.9.1 // indirect
+	github.com/pkg/errors v0.9.1
 	github.com/sirupsen/logrus v1.8.1
 	github.com/spf13/afero v1.8.2
 	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c // indirect
