@@ -23,3 +23,15 @@ tasks:
   test:
     cmds:
       - echo "WIP"
+
+  registry:
+    cmds:
+      - mkdir -p registry
+      - docker run -d -p 15000:5000 --restart always -v ./registry:/var/lib/registry/docker/registry/ --name registry registry:2 || echo "done"
+      - docker start registry
+
+  demo:
+    cmds:
+      - docker pull alpine:3.17
+      - docker tag alpine:3.17 localhost:15000/alpine:3.17
+      - docker push localhost:15000/alpine:3.17
