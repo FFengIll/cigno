@@ -1,0 +1,25 @@
+# https://taskfile.dev
+
+version: '3'
+
+vars:
+  GREETING: Hello, World!
+
+tasks:
+  default:
+    cmds:
+      - echo "{{.GREETING}}"
+    silent: true
+
+  fmt:
+    cmds:
+      - go mod tidy
+
+  build:
+    cmds:
+      - go build -o cigno ./
+      - chmod +x cigno
+
+  test:
+    cmds:
+      - echo "WIP"
