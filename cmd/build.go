@@ -32,9 +32,10 @@ var buildCmd = &cobra.Command{
 		dockerfile, _ := cmd.Flags().GetString("file")
 		buildArgs, _ := cmd.Flags().GetStringArray("build-arg")
 		doPush, _ := cmd.Flags().GetBool("push")
-		logrus.Info(tags)
-		logrus.Info(dockerfile)
-		logrus.Info(buildArgs)
+		logrus.WithField("dockerfile", dockerfile).
+			WithField("tag", tags).
+			WithField("args", buildArgs).
+			Info("Basic Info:")
 
 		es, _ := cmd.Flags().GetString("env-strategy")
 		var found = false
@@ -57,6 +58,8 @@ var buildCmd = &cobra.Command{
 		}
 		bs, _ := io.ReadAll(df)
 
+		logrus.Infof("Dockerfile Content: \n%s", string(bs))
+
 		// build with dockerfile
 		engine := pkg.NewEngine()
 
@@ -77,7 +80,8 @@ var buildCmd = &cobra.Command{
 
 func init() {
 	flags := buildCmd.Flags()
-	flags.StringP("file", "f", "Dockerfile", "dockerfile")
+	flags.StringP("file", "f", "", "dockerfile")
+	buildCmd.MarkFlagRequired("file")
 	flags.StringVarP(&buildDir, "context", "c", buildDir, "")
 	flags.StringArrayP("tag", "t", []string{}, "tag used in the `name:tag` format")
 	flags.BoolVar(&dryRun, "dry-run", false, "")

@@ -1,0 +1,10 @@
+ARG GLOBAL=global
+ARG BASE=localhost:15000/alpine:3.17
+
+FROM $BASE
+
+ARG LOCAL=local
+COPY cmd /data/cmd
+
+ENV LOCAL=$LOCAL
+ENV PATH=$LOCAL:$PATH
