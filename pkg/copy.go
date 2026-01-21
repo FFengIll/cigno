@@ -2,6 +2,12 @@ package pkg
 
 import (
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/google/go-containerregistry/pkg/crane"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -11,6 +17,7 @@ import (
 	specsv1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+	archive "github.com/vbatts/tar-split/archive/tar"
 )
 
 // doCopy
@@ -179,4 +186,189 @@ func createAddendums(startHistory, startLayer int, history []v1.History, layers 
 	}
 
 	return adds
+}
+
+// doAdd handles ADD command
+// ADD is like COPY but with additional features:
+// 1. Supports URLs (http, https) - downloads and adds as file
+// 2. Automatically extracts local tar files
+func (engine *Engine) doAdd(cmd *instructions.AddCommand, img v1.Image) (v1.Image, error) {
+	sources := cmd.Sources()
+	dest := cmd.Dest()
+
+	// If there's a URL source, we can only handle one source at a time
+	var tarPath string
+	var err error
+
+	// Check if source is a URL
+	if len(sources) == 1 && isURL(sources[0]) {
+		tarPath, err = engine.downloadURL(sources[0], dest)
+		if err != nil {
+			return nil, fmt.Errorf("downloading URL %s: %w", sources[0], err)
+		}
+	} else {
+		// Check if source is a tar file that should be extracted
+		if len(sources) == 1 && isTarFile(sources[0]) {
+			tarPath, err = engine.extractTar(sources[0], dest)
+			if err != nil {
+				return nil, fmt.Errorf("extracting tar file %s: %w", sources[0], err)
+			}
+		} else {
+			// Same as COPY for local files
+			tarPath = createBlob(engine.BuildDir, dest, sources)
+			logrus.Infof("cached blob to: %s", tarPath)
+		}
+	}
+
+	var layer v1.Layer
+	layer, err = tarball.LayerFromFile(tarPath, tarball.WithMediaType(engine.LayerType))
+	if err != nil {
+		return nil, err
+	}
+
+	img, err = mutate.AppendLayers(img, layer)
+	if err != nil {
+		return nil, err
+	}
+
+	// Clean up temp file if it's a downloaded URL
+	if len(sources) == 1 && isURL(sources[0]) {
+		os.Remove(tarPath)
+	}
+
+	return img, nil
+}
+
+// isURL checks if the source is a URL
+func isURL(source string) bool {
+	u, err := url.Parse(source)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https")
+}
+
+// isTarFile checks if the source is a tar file
+func isTarFile(source string) bool {
+	return strings.HasSuffix(source, ".tar") ||
+		strings.HasSuffix(source, ".tar.gz") ||
+		strings.HasSuffix(source, ".tgz") ||
+		strings.HasSuffix(source, ".tar.bz2") ||
+		strings.HasSuffix(source, ".tar.xz")
+}
+
+// downloadURL downloads a file from URL and returns the path to the downloaded file
+func (engine *Engine) downloadURL(urlStr, dest string) (string, error) {
+	// Download to temp file
+	tempFile, err := os.CreateTemp("", "cigno-download-*")
+	if err != nil {
+		return "", err
+	}
+	defer tempFile.Close()
+
+	resp, err := http.Get(urlStr)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download failed with status: %s", resp.Status)
+	}
+
+	_, err = io.Copy(tempFile, resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	// Now create a tarball with the downloaded file
+	tb := NewTarball(engine.BuildDir)
+	blobPath := fmt.Sprintf("/tmp/cigno-add-%d.tar", os.Getpid())
+	blob, err := os.Create(blobPath)
+	if err != nil {
+		return "", err
+	}
+	defer blob.Close()
+
+	// Get filename from URL
+	filename := filepath.Base(urlStr)
+	if dest != "" && !strings.HasSuffix(dest, "/") {
+		// If dest is a file (not directory), use that as filename
+		filename = filepath.Base(dest)
+	}
+
+	// Create tar with the downloaded file inside
+	downloadedPath := tempFile.Name()
+	defer os.Remove(downloadedPath)
+
+	// Extract basename for tar header
+	tarDest := dest
+	if tarDest == "" || tarDest == "." {
+		tarDest = "/"
+	}
+
+	options := []TarOption{
+		ReplacePrefixPath("./", ""),
+		ReplacePrefixPath(filename, strings.TrimPrefix(tarDest, "/")),
+	}
+
+	err = tb.tar(blob, []string{downloadedPath}, options...)
+	if err != nil {
+		return "", err
+	}
+
+	return blobPath, nil
+}
+
+// extractTar extracts a local tar file and returns the path to the extracted tarball
+func (engine *Engine) extractTar(source, dest string) (string, error) {
+	// Resolve source path relative to build dir
+	srcPath := source
+	if !filepath.IsAbs(source) {
+		srcPath = filepath.Join(engine.BuildDir, source)
+	}
+
+	// Check if it's a directory (if so, we don't extract)
+	info, err := os.Stat(srcPath)
+	if err != nil {
+		return "", err
+	}
+
+	if info.IsDir() {
+		// Directory, just copy it like COPY does
+		return createBlob(engine.BuildDir, dest, []string{source}), nil
+	}
+
+	// It's a file, check if it's a tar file by opening it
+	f, err := os.Open(srcPath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	// Try to read as tar to verify
+	tr := archive.NewReader(f)
+	_, err = tr.Next()
+	if err != nil {
+		// Not a valid tar file, just copy it like COPY does
+		return createBlob(engine.BuildDir, dest, []string{source}), nil
+	}
+
+	// Valid tar file - create a new tarball with extracted contents
+	blobPath := fmt.Sprintf("/tmp/cigno-add-%d.tar", os.Getpid())
+
+	tb := NewTarball(engine.BuildDir)
+	destDir := dest
+	if destDir == "" {
+		destDir = "/"
+	}
+
+	// Use tarball Copy to extract with path transformations
+	options := []TarOption{
+		ReplacePrefixPath("./", strings.TrimPrefix(destDir, "/")),
+	}
+
+	err = tb.Copy(blobPath, srcPath, options...)
+	if err != nil {
+		return "", err
+	}
+
+	return blobPath, nil
 }

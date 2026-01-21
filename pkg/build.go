@@ -110,6 +110,13 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 					return err
 				}
 				break
+			case command.Add:
+				addCmd := ins.(*instructions.AddCommand)
+				img, err = engine.doAdd(addCmd, img)
+				if err != nil {
+					return err
+				}
+				break
 			case command.Run:
 				// do not run in a daemon, overlay fs or any other isolation
 				// we do only support some `scope in control` cmd and files, e.g. wget, tar, tee
