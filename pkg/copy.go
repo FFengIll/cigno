@@ -82,6 +82,25 @@ func (engine *Engine) doCopyFrom(cmd *instructions.CopyCommand, img v1.Image) (v
 			}
 		}
 
+		// skip pulling scratch as it's a special reserved empty image
+		if base == "scratch" {
+			// scratch has no layers, so all layers from origImg are the diff
+			origConfig, err := origImg.ConfigFile()
+			if err != nil {
+				return nil, err
+			}
+			origLayers, err := origImg.Layers()
+			if err != nil {
+				return nil, err
+			}
+			adds := createAddendums(0, 0, origConfig.History, origLayers)
+			img, err = mutate.Append(img, adds...)
+			if err != nil {
+				return nil, err
+			}
+			break
+		}
+
 		//
 		baseImg, err := crane.Pull(base, options...)
 		if err != nil {
