@@ -131,10 +131,18 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 				if err := engine.doEnv(&stage, envCmd); err != nil {
 					return err
 				}
+				img, err = addHistory(img, envCmd.String())
+				if err != nil {
+					return err
+				}
 				break
 			case command.Arg:
 				argCmd := ins.(*instructions.ArgCommand)
 				if _, err := engine.doArg(&stage, argCmd, img); err != nil {
+					return err
+				}
+				img, err = addHistory(img, argCmd.String())
+				if err != nil {
 					return err
 				}
 				break
@@ -143,10 +151,18 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 				if err := engine.doWorkdir(&stage, workdirCmd, cfg); err != nil {
 					return err
 				}
+				img, err = addHistory(img, workdirCmd.String())
+				if err != nil {
+					return err
+				}
 				break
 			case command.User:
 				userCmd := ins.(*instructions.UserCommand)
 				if err := engine.doUser(userCmd, cfg); err != nil {
+					return err
+				}
+				img, err = addHistory(img, userCmd.String())
+				if err != nil {
 					return err
 				}
 				break
@@ -155,10 +171,18 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 				if err := engine.doCmd(cmdCmd, cfg); err != nil {
 					return err
 				}
+				img, err = addHistory(img, cmdCmd.String())
+				if err != nil {
+					return err
+				}
 				break
 			case command.Entrypoint:
 				entrypointCmd := ins.(*instructions.EntrypointCommand)
 				if err := engine.doEntrypoint(entrypointCmd, cfg); err != nil {
+					return err
+				}
+				img, err = addHistory(img, entrypointCmd.String())
+				if err != nil {
 					return err
 				}
 				break
@@ -167,16 +191,28 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 				if err := engine.doLabel(labelCmd, cfg); err != nil {
 					return err
 				}
+				img, err = addHistory(img, labelCmd.String())
+				if err != nil {
+					return err
+				}
 				break
 			case command.Expose:
 				exposeCmd := ins.(*instructions.ExposeCommand)
 				if err := engine.doExpose(exposeCmd, cfg); err != nil {
 					return err
 				}
+				img, err = addHistory(img, exposeCmd.String())
+				if err != nil {
+					return err
+				}
 				break
 			case command.Volume:
 				volumeCmd := ins.(*instructions.VolumeCommand)
 				if err := engine.doVolume(volumeCmd, cfg); err != nil {
+					return err
+				}
+				img, err = addHistory(img, volumeCmd.String())
+				if err != nil {
 					return err
 				}
 				break
@@ -259,6 +295,17 @@ func setEnvVars(cfg *v1.ConfigFile, envVars map[string]string) error {
 	}
 	cfg.Config.Env = newEnv
 	return nil
+}
+
+// addHistory adds a history entry for config-only commands (empty layer)
+func addHistory(img v1.Image, createdBy string) (v1.Image, error) {
+	add := mutate.Addendum{
+		History: v1.History{
+			CreatedBy:  createdBy,
+			EmptyLayer: true,
+		},
+	}
+	return mutate.Append(img, add)
 }
 
 // validation will validate build arguments to confirm it works well
