@@ -5,7 +5,6 @@ import (
 	"os"
 	"strings"
 
-	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"github.com/sirupsen/logrus"
 )
@@ -14,7 +13,8 @@ import (
 // e.g.
 // ENV OPT=/opt
 // ENV PATH=/opt:$PATH
-func (engine *Engine) doEnv(stage *instructions.Stage, cmd *instructions.EnvCommand, img v1.Image) (v1.Image, error) {
+// The env is stored in engine.Env[stage] and applied later via setEnvVars
+func (engine *Engine) doEnv(stage *instructions.Stage, cmd *instructions.EnvCommand) error {
 	var env = engine.Env[stage]
 
 	for _, kv := range cmd.Env {
@@ -29,8 +29,7 @@ func (engine *Engine) doEnv(stage *instructions.Stage, cmd *instructions.EnvComm
 		logrus.WithField("key", key).WithField("value", value).Debug("ENV")
 	}
 
-	// FIXME: do env mutate into image config later
-	return img, nil
+	return nil
 }
 
 func expandEnv(env map[string]string, expr string) (string, bool) {

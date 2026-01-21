@@ -115,20 +115,45 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 				// we do only support some `scope in control` cmd and files, e.g. wget, tar, tee
 				// furthermore, use a temporary path to hold root fs structure if possible
 				// then we archive the results into a tar file as blob to append
+				logrus.Warn("RUN command is not yet implemented")
 			case command.Env:
 				// here is an easy way to append ENV,
 				// and to support `+=`, we should be careful to merge original value and plus value.
 				// furthermore, we should record any ENV we meet to do the eval
-				// FIXME: no we use a `bash -c` command to help eval env
 				envCmd := ins.(*instructions.EnvCommand)
-				img, err = engine.doEnv(&stage, envCmd, img)
-				if err != nil {
+				if err := engine.doEnv(&stage, envCmd); err != nil {
 					return err
 				}
 				break
 			case command.Arg:
 				argCmd := ins.(*instructions.ArgCommand)
-				img, err = engine.doArg(&stage, argCmd, img)
+				if _, err := engine.doArg(&stage, argCmd, img); err != nil {
+					return err
+				}
+				break
+			case command.Workdir:
+				workdirCmd := ins.(*instructions.WorkdirCommand)
+				if err := engine.doWorkdir(&stage, workdirCmd, cfg); err != nil {
+					return err
+				}
+				break
+			case command.User:
+				userCmd := ins.(*instructions.UserCommand)
+				if err := engine.doUser(userCmd, cfg); err != nil {
+					return err
+				}
+				break
+			case command.Cmd:
+				cmdCmd := ins.(*instructions.CmdCommand)
+				if err := engine.doCmd(cmdCmd, cfg); err != nil {
+					return err
+				}
+				break
+			case command.Entrypoint:
+				entrypointCmd := ins.(*instructions.EntrypointCommand)
+				if err := engine.doEntrypoint(entrypointCmd, cfg); err != nil {
+					return err
+				}
 				break
 			default:
 				break
