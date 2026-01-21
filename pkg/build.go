@@ -162,6 +162,24 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 					return err
 				}
 				break
+			case command.Label:
+				labelCmd := ins.(*instructions.LabelCommand)
+				if err := engine.doLabel(labelCmd, cfg); err != nil {
+					return err
+				}
+				break
+			case command.Expose:
+				exposeCmd := ins.(*instructions.ExposeCommand)
+				if err := engine.doExpose(exposeCmd, cfg); err != nil {
+					return err
+				}
+				break
+			case command.Volume:
+				volumeCmd := ins.(*instructions.VolumeCommand)
+				if err := engine.doVolume(volumeCmd, cfg); err != nil {
+					return err
+				}
+				break
 			default:
 				break
 			}

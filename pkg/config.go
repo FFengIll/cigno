@@ -39,3 +39,39 @@ func (engine *Engine) doEntrypoint(cmd *instructions.EntrypointCommand, cfg *v1.
 	logrus.WithField("entrypoint", cfg.Config.Entrypoint).Debug("ENTRYPOINT")
 	return nil
 }
+
+// doLabel handles LABEL command
+func (engine *Engine) doLabel(cmd *instructions.LabelCommand, cfg *v1.ConfigFile) error {
+	if cfg.Config.Labels == nil {
+		cfg.Config.Labels = make(map[string]string)
+	}
+	for _, kv := range cmd.Labels {
+		cfg.Config.Labels[kv.Key] = kv.Value
+		logrus.WithField("key", kv.Key).WithField("value", kv.Value).Debug("LABEL")
+	}
+	return nil
+}
+
+// doExpose handles EXPOSE command
+func (engine *Engine) doExpose(cmd *instructions.ExposeCommand, cfg *v1.ConfigFile) error {
+	if cfg.Config.ExposedPorts == nil {
+		cfg.Config.ExposedPorts = make(map[string]struct{})
+	}
+	for _, port := range cmd.Ports {
+		cfg.Config.ExposedPorts[port] = struct{}{}
+		logrus.WithField("port", port).Debug("EXPOSE")
+	}
+	return nil
+}
+
+// doVolume handles VOLUME command
+func (engine *Engine) doVolume(cmd *instructions.VolumeCommand, cfg *v1.ConfigFile) error {
+	if cfg.Config.Volumes == nil {
+		cfg.Config.Volumes = make(map[string]struct{})
+	}
+	for _, vol := range cmd.Volumes {
+		cfg.Config.Volumes[vol] = struct{}{}
+		logrus.WithField("volume", vol).Debug("VOLUME")
+	}
+	return nil
+}
