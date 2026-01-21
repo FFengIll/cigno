@@ -8,6 +8,9 @@ import (
 	"strings"
 
 	"github.com/docker/distribution/uuid"
+	"cigno/pkg/cache"
+	"github.com/google/go-containerregistry/pkg/crane"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 	"github.com/sirupsen/logrus"
@@ -21,6 +24,7 @@ type Engine struct {
 	GlobalArg    map[string]string
 	LocalArgs    map[*instructions.Stage]map[string]string
 	Env          map[*instructions.Stage]map[string]string
+	Cache        *cache.Cache
 
 	Log *logrus.Logger
 }
@@ -49,6 +53,45 @@ func NewEngine() *Engine {
 		Env:          map[*instructions.Stage]map[string]string{},
 		Log:          logrus.New(),
 	}
+}
+
+// InitCache initializes the local cache
+func (engine *Engine) InitCache(cachePath string) error {
+	c, err := cache.New(cachePath)
+	if err != nil {
+		return err
+	}
+	engine.Cache = c
+	return nil
+}
+
+// PullImageWithCache pulls an image with cache support
+// Checks local cache first, then falls back to remote pull
+func (engine *Engine) PullImageWithCache(ref string) (v1.Image, error) {
+	// Try cache first if enabled
+	if engine.Cache != nil {
+		if img, found, err := engine.Cache.Get(ref); err == nil && found {
+			logrus.WithField("ref", ref).Info("cache hit")
+			return img, nil
+		}
+		logrus.WithField("ref", ref).Debug("cache miss")
+	}
+
+	// Pull from remote
+	logrus.WithField("ref", ref).Info("pulling image")
+	img, err := crane.Pull(ref)
+	if err != nil {
+		return nil, fmt.Errorf("pulling %s: %w", ref, err)
+	}
+
+	// Store in cache for future use
+	if engine.Cache != nil {
+		if err := engine.Cache.Put(img, ref); err != nil {
+			logrus.WithError(err).Warn("failed to cache image")
+		}
+	}
+
+	return img, nil
 }
 
 func (engine *Engine) WithLog(log *logrus.Logger) {

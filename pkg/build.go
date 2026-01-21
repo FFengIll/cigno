@@ -5,7 +5,6 @@ import (
 	"io"
 	"strings"
 
-	"github.com/google/go-containerregistry/pkg/crane"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
@@ -17,7 +16,7 @@ import (
 )
 
 func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
-	/* load crane shell
+	/* Load dockerfile and build image
 	- rebase --from= --base=
 	- copy
 	- annotation
@@ -63,9 +62,8 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 
 		logrus.WithField("stage image", basePath).Info("STAGE")
 
-		// doFrom
-		var options []crane.Option
-		base, err := crane.Pull(basePath, options...)
+		// Pull base image (with cache support)
+		base, err := engine.PullImageWithCache(basePath)
 		if err != nil {
 			return fmt.Errorf("pulling %s: %s", stageImage, err)
 		}
