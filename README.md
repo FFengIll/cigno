@@ -1,180 +1,146 @@
 # Cigno
 
-Fast container image builder without Docker daemon, using OCI operations.
+**A daemonless container image *assembly* builder.**
 
-> **Positioning**: cigno is an *assembly builder*, not a general builder.
-> It assembles images from prebuilt artifacts and component images
-> (COPY / rebase / config edits). It intentionally does not execute `RUN` —
-> see [docs/spec/20260926-assessment-and-direction.md](docs/spec/20260926-assessment-and-direction.md).
+Cigno assembles container images from prebuilt artifacts and component
+images using plain OCI registry operations — no Docker daemon, no
+privileged runtime, no overlay filesystem. One static binary, built for
+sandboxed CI and AI-agent environments.
 
-## Features
+```bash
+cigno build -f Dockerfile -o myapp.tar
+```
 
-- **No Docker daemon required**: Builds images using OCI operations via `crane`
-- **Fast**: No full blob pull for base images when rebase is possible
-- **Artifact-friendly**: Designed for artifact image builds and CI pipelines
-- **Dockerfile compatible**: Supports common Dockerfile instructions
-- **Embedded registry**: Local registry v2 server for cache / push targets
-- **Hermetic tests**: `go test ./...` needs no network, no docker
+> **What it is / is not**
+>
+> ✅ Drop prebuilt artifacts into an image (`COPY` / `ADD`)
+> ✅ Assemble component images onto a shared base (layer-level rebase)
+> ✅ Config edits: `ENV` / `WORKDIR` / `CMD` / `LABEL` / …
+> ❌ Runs nothing. `RUN` is rejected by design — for command execution use
+>    [BuildKit](https://github.com/moby/buildkit) / [kaniko](https://github.com/GoogleContainerTools/kaniko),
+>    then feed their artifacts back into cigno.
 
-## Installation
+---
+
+## Why cigno
+
+| | Docker/BuildKit | kaniko | cigno |
+|---|---|---|---|
+| Daemon / privilege | needs daemon | rootless but heavy | **none, single binary** |
+| Work model | executes commands | executes commands | **assembles files & layers** |
+| Rebase to new base | full rebuild/re-push | full rebuild | **diff layers only** |
+| Cold start / footprint | large | large | tiny |
+
+Typical flow: build/test artifacts anywhere → `cigno build` wraps them into
+an OCI image → push (or save as docker-loadable tar). Rebuilding against a
+new base image only ships the layers that changed.
+
+## Install
 
 ```bash
 go install github.com/feng-project/cigno@latest
 ```
 
+Prebuilt binaries for linux/darwin (amd64/arm64) are attached to releases
+(goreleaser). Check the installed version with `cigno --version`.
+
 ## Quick Start
 
 ```bash
-# Build an image from Dockerfile
-cigno build -t myapp:latest -f Dockerfile
-
-# Specify build context
-cigno build -f Dockerfile -t myapp:latest -c /path/to/context
-
-# Save to docker-loadable tar instead of pushing
-cigno build -f Dockerfile -o output.tar -t myapp:latest
-
-# Build args (override ARG defaults)
-cigno build -f Dockerfile --build-arg VERSION=1.2.3 -t myapp:1.2.3
-
-# Validate Dockerfile without building
-cigno build -f Dockerfile --validate
-
-# Disable the local base image disk cache
-cigno build -f Dockerfile --no-cache -t myapp:latest
+cigno build -f Dockerfile -t myapp:latest          # build & push
+cigno build -f Dockerfile -o myapp.tar             # …or save a docker-loadable tar
+cigno build -f Dockerfile --validate               # parse-only check
+cigno build -f Dockerfile --build-arg VERSION=1.2.3 ...
+cigno build -f Dockerfile -c /path/to/context ...  # custom build context
+cigno build -f Dockerfile --no-cache ...           # skip the base-image disk cache
 ```
 
-## Supported Dockerfile Instructions
+## Dockerfile support
 
-| Instruction | Status | Notes |
-|-------------|--------|-------|
-| `FROM` | ✅ | Pulls base image with cache support; `scratch` supported |
-| `COPY` | ✅ | Local files/dirs, wildcards (`.dockerignore` honored), `--from` image rebase / tarball / **stage name** (path-level), ARG expansion |
-| `ADD` | ✅ | Like COPY + URL download + auto-extract: **local** tar/tar.gz/tgz/tar.bz2/tar.xz are extracted (detected by content, not extension); **remote URLs are placed verbatim, never decompressed** — both per docker semantics |
-| `ENV` | ✅ | With `$VAR` expansion |
-| `ARG` | ✅ | Global and local scope; in-stage `ARG KEY` inherits global default |
-| `WORKDIR` | ✅ | Config field |
-| `USER` | ✅ | Config field |
-| `CMD` | ✅ | Config field |
-| `ENTRYPOINT` | ✅ | Config field |
-| `LABEL` | ✅ | Metadata, ARG-expanded values |
-| `EXPOSE` | ✅ | Config field |
-| `VOLUME` | ✅ | Config field |
-| `RUN` | ❌ | **By design** — see positioning note above |
-| `REBASE` | ⏳ | Planned (annotation-based) |
+Cigno implements a **strict, verified subset** of the Dockerfile spec —
+semantics are checked line-by-line against the official reference and locked
+by tests (see the [semantics audit](docs/spec/20260927-semantics-audit.md)).
 
-## Local Registry
+| Instruction | Status | Semantics |
+|---|---|---|
+| `FROM` | ✅ | image / tag / digest / `scratch`; ARG-expanded; multi-stage with named stages |
+| `COPY` | ✅ | files & directories, wildcards, `.dockerignore`, `../`-stripping, `--chown`/`--chmod`, `--from=<stage>` (path-level) and `--from=<image>` (layer rebase, see below); env/arg expansion in paths |
+| `ADD` | ✅ | like COPY, plus: **local** tar/tar.gz/tgz/tar.bz2/tar.xz auto-extract (detected by file content, not extension); **remote URLs are placed verbatim, never decompressed** — docker semantics |
+| `ENV` | ✅ | chained expansion; overrides same-named ARG; undefined vars → empty |
+| `ARG` | ✅ | global + stage scope; in-stage `ARG KEY` inherits the global default |
+| `WORKDIR` | ✅ | absolute / relative chaining / env expansion |
+| `USER` `EXPOSE` `VOLUME` `LABEL` | ✅ | config fields with env/arg expansion |
+| `CMD` `ENTRYPOINT` | ✅ | exec form verbatim; shell form wrapped in `/bin/sh -c` |
+| `RUN` | ❌ | **rejected with guidance** — cigno never executes commands |
+| `SHELL` `HEALTHCHECK` `STOPSIGNAL` `ONBUILD` `MAINTAINER` | ⚠️ | warned and skipped |
+| `REBASE` (cigno extension) | ⏳ | planned |
 
-Start an embedded registry server for local caching / push targets
-(plain HTTP works automatically for localhost refs):
+Full per-instruction mapping with test references:
+[docs/spec/20260927-semantics-audit.md](docs/spec/20260927-semantics-audit.md).
 
-```bash
-# Start registry server (default: localhost:5000)
-cigno registry start
+## Component assembly & rebase
 
-# Custom address and storage
-cigno registry start --addr localhost:6000 --storage /path/to/storage
-```
-
-## Advanced Usage
-
-### Image Rebase with `COPY --from`
-
-Copy layers from another image, supporting component assembly:
+The differentiating feature: `COPY --from=<image>` copies **only the diff
+layers** of that image onto the current one (the base is never re-pulled in
+full). Update a component, rebuild the composite, push one layer.
 
 ```dockerfile
-FROM alpine:latest AS base
-COPY certs/ca-certificates.crt /etc/ssl/certs/
-
-FROM scratch AS app
-COPY --from=base / /
-COPY app /usr/local/bin/app
+FROM registry.internal/base:2.1          # shared, stable base
+COPY --from=registry.internal/comp-a:1.4 / /   # verbatim layer rebase
+COPY --from=comp-build /out/bin /usr/local/bin/ # path-level from a build stage
+COPY conf/app.yaml /etc/app/
 ```
 
-### Build Context Options
+## Embedded registry
+
+A built-in registry v2 server (stdlib HTTP, filesystem storage) serves as a
+local cache / push target — localhost refs automatically use plain HTTP:
 
 ```bash
-# Add base image mapping
-cigno build --image-base mybase=ubuntu:22.04
-
-# Add tarball source
-cigno build --tarball artifacts=./artifacts.tar
-
-# Add folder source
-cigno build --folder data=/path/to/data
+cigno registry start [--addr 127.0.0.1:5000] [--storage ~/.cigno/registry]
 ```
 
 ## Caching
 
-Cigno uses local disk cache by default (`~/.cigno/cache/`):
+Base images are cached on disk (`~/.cigno/cache/`) and reused across builds:
 
 ```bash
-# Images are cached automatically
-cigno build -f Dockerfile -t myapp:latest  # First run: pulls from registry
-cigno build -f Dockerfile -t myapp:latest  # Subsequent runs: uses cache
-
-# Manage the cache
 cigno cache list
 cigno cache clear
 ```
 
-## Testing
-
-Tests are fully hermetic — they spin up the embedded registry in-process:
+## Development
 
 ```bash
-go test ./...
+task build   # go build
+task test    # hermetic: spins up the embedded registry in-process; no network, no docker
+task vet     # vet + gofmt
+task --list  # see all tasks
 ```
 
-## Architecture
+Repository layout: `cmd/` (CLI: build, registry, cache, version) ·
+`pkg/` (engine, copy/add, archive detection, tar tooling, cache,
+`registry/` embedded server) · `docs/` (architecture, specs, audits) ·
+`.github/` (CI + release workflows).
 
-```
-cigno/
-├── cmd/              # CLI commands
-│   ├── root.go       # Main entry point
-│   ├── build.go      # Build command
-│   └── registry.go   # Registry server command
-├── pkg/
-│   ├── build.go      # Main build logic
-│   ├── engine.go     # Build engine
-│   ├── config.go     # Config command handlers
-│   ├── copy.go       # COPY/ADD implementation
-│   ├── env.go        # ENV handling
-│   ├── arg.go        # ARG handling
-│   ├── tarball.go    # Tarball operations
-│   ├── cache/        # Local cache
-│   ├── registry/     # Embedded registry
-│   └── validate.go   # Validation layer
-└── docs/             # Documentation
-```
+### Design constraints
 
-## Design Philosophy
-
-> "Build image quickly, without docker daemon, no full blob pull, for artifact and CI scenarios"
-
-### Key Constraints
-
-- **No Docker daemon**: Uses crane for OCI operations
-- **No full blob pull**: Uses registry API + layer diffing
-- **CI-friendly**: Stateless, containerizable
-- **Artifact-focused**: Prioritizes COPY over RUN
+- No Docker daemon — pure OCI operations via
+  [go-containerregistry](https://github.com/google/go-containerregistry)
+- No full blob pull — registry API + layer diffing for rebase
+- Stateless and CI-friendly; containerizable
+- Dockerfile semantics: strict subset, never guess — when in doubt, follow
+  the reference and add a test
 
 ## Documentation
 
-- [Architecture](docs/arch/20260121-arch.md)
-- [Design Roadmap (2026-01)](docs/spec/20260121-design-roadmap.md)
-- [Value Assessment & Direction (2026-09)](docs/spec/20260926-assessment-and-direction.md)
-- [Semantics Audit (2026-09-27)](docs/spec/20260927-semantics-audit.md)
-- [Dockerfile Support](docs/dockerfile.md)
-- [Rebase Guide](docs/rebase.md)
-
-## Dependencies
-
-- [go-containerregistry](https://github.com/google/go-containerregistry) - OCI operations
-- [moby/buildkit](https://github.com/moby/buildkit) - Dockerfile parsing
-
-The embedded registry server uses only the Go standard library.
+| Doc | Content |
+|---|---|
+| [Semantics Audit (2026-09)](docs/spec/20260927-semantics-audit.md) | per-instruction spec alignment + tests |
+| [Value Assessment & Direction (2026-09)](docs/spec/20260926-assessment-and-direction.md) | positioning, decisions, changelog |
+| [Design Roadmap (2026-01)](docs/spec/20260121-design-roadmap.md) | historical spec (partially superseded) |
+| [Architecture](docs/arch/20260121-arch.md) · [Rebase Guide](docs/rebase.md) | internals |
 
 ## License
 
-MPL 2.0
+[MPL 2.0](LICENSE)
