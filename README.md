@@ -59,7 +59,7 @@ cigno build -f Dockerfile --no-cache ...           # skip the base-image disk ca
 
 Cigno implements a **strict, verified subset** of the Dockerfile spec —
 semantics are checked line-by-line against the official reference and locked
-by tests (see the [semantics audit](docs/spec/20260927-semantics-audit.md)).
+by tests (see the [semantics audit](.design/20260927-semantics-audit.md)).
 
 | Instruction | Status | Semantics |
 |---|---|---|
@@ -76,7 +76,7 @@ by tests (see the [semantics audit](docs/spec/20260927-semantics-audit.md)).
 | `REBASE` (cigno extension) | ⏳ | planned |
 
 Full per-instruction mapping with test references:
-[docs/spec/20260927-semantics-audit.md](docs/spec/20260927-semantics-audit.md).
+[.design/20260927-semantics-audit.md](.design/20260927-semantics-audit.md).
 
 ## Component assembly & rebase
 
@@ -120,7 +120,7 @@ task --list  # see all tasks
 
 Repository layout: `cmd/` (CLI: build, registry, cache, version) ·
 `pkg/` (engine, copy/add, archive detection, tar tooling, cache,
-`registry/` embedded server) · `docs/` (architecture, specs, audits) ·
+`registry/` embedded server) · `.design/` (architecture, specs, audits) ·
 `.github/` (CI + release workflows).
 
 ### Design constraints
@@ -136,10 +136,10 @@ Repository layout: `cmd/` (CLI: build, registry, cache, version) ·
 
 | Doc | Content |
 |---|---|
-| [Semantics Audit (2026-09)](docs/spec/20260927-semantics-audit.md) | per-instruction spec alignment + tests |
-| [Value Assessment & Direction (2026-09)](docs/spec/20260926-assessment-and-direction.md) | positioning, decisions, changelog |
-| [Design Roadmap (2026-01)](docs/spec/20260121-design-roadmap.md) | historical spec (partially superseded) |
-| [Architecture](docs/arch/20260121-arch.md) · [Rebase Guide](docs/rebase.md) | internals |
+| [Semantics Audit (2026-09)](.design/20260927-semantics-audit.md) | per-instruction spec alignment + tests |
+| [Value Assessment & Direction (2026-09)](.design/20260926-assessment-and-direction.md) | positioning, decisions, changelog |
+| [Design Roadmap (2026-01)](.design/20260121-design-roadmap.md) | historical spec (partially superseded) |
+| [Architecture](.design/20260121-arch.md) | internals |
 
 ## License
 
