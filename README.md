@@ -164,6 +164,7 @@ cigno/
 - [Architecture](docs/arch/20260121-arch.md)
 - [Design Roadmap (2026-01)](docs/spec/20260121-design-roadmap.md)
 - [Value Assessment & Direction (2026-09)](docs/spec/20260926-assessment-and-direction.md)
+- [Semantics Audit (2026-09-27)](docs/spec/20260927-semantics-audit.md)
 - [Dockerfile Support](docs/dockerfile.md)
 - [Rebase Guide](docs/rebase.md)
 
