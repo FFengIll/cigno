@@ -108,7 +108,24 @@ replacement and must not try to become one.
   tarball path transforms, cache put/get/list/clear
 
 **Known remaining gaps** (acceptable for now)
-- No `.dockerignore` handling; no wildcard (`COPY *.txt`) matching
+- No wildcard (`COPY *.txt`) matching
 - No multi-stage `COPY --from=<stage-name>` (works with image refs, tarballs)
 - History `created` timestamps are zero values
 - No CI pipeline / release packaging yet
+
+## 5. Gap Closure Pass (2026-09-27)
+
+All four gaps above were closed the next day:
+
+- **Multi-stage `COPY --from=<stage>`**: built stages are recorded on the
+  engine; a stage reference now copies paths out of the stage's built
+  filesystem (docker semantics), while image-ref rebase keeps verbatim
+  layer assembly semantics.
+- **Wildcard COPY**: glob patterns (`* ? [..]`) expand against the build
+  context (sorted); zero matches fail the build like docker.
+- **`.dockerignore`**: honored for local COPY/ADD via moby/patternmatcher
+  (negation + parent-dir pruning); also fixed `COPY . /data` dest remap.
+- **Timestamps**: image `created` and history entries now carry real
+  build times instead of zero values.
+- **Release packaging**: goreleaser config (linux/darwin, amd64/arm64)
+  plus a tag-triggered release workflow; `cigno --version` added.
