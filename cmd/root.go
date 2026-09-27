@@ -19,11 +19,15 @@ var (
 	dryRun         = false
 	validate       = false
 	verbose        = false
+
+	// version is injected at release build time via -ldflags.
+	version = "dev"
 )
 
 var rootCmd = cobra.Command{
-	Use:   "cigno",
-	Short: "Fast container image builder without a Docker daemon, using OCI operations",
+	Use:     "cigno",
+	Version: version,
+	Short:   "Fast container image builder without a Docker daemon, using OCI operations",
 	Long: `Cigno builds container images without a Docker daemon.
 
 It assembles images from Dockerfiles using pure OCI operations (via crane),
