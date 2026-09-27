@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,6 +130,96 @@ func TestExtractTar_NotTar(t *testing.T) {
 	got, ok := files["docs"]
 	if !ok || string(want) != got {
 		t.Errorf("compressed non-tar must be added verbatim, got: %q", got)
+	}
+}
+
+// TestAddURL_NeverExtracted: remote archives are placed verbatim, never
+// decompressed ("If remote file is a tar archive, the archive is not
+// extracted by default", docker docs).
+func TestAddURL_NeverExtracted(t *testing.T) {
+	inner := makeTarBytes(t, map[string]string{"app": "binary"})
+	archive := compressBytes(t, inner, "gzip")
+
+	var served string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(served))
+	}))
+	defer srv.Close()
+
+	buildDir := t.TempDir()
+
+	t.Run("tar.gz stays compressed", func(t *testing.T) {
+		served = string(archive)
+		engine := NewEngine()
+		engine.BuildDir = buildDir
+		// trailing slash: filename inferred from the URL path
+		blob, err := engine.addURL(srv.URL+"/artifact.tar.gz", "/opt/", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files := tarFileSet(t, blob)
+		if files["opt/artifact.tar.gz"] != served {
+			t.Errorf("remote archive must be placed verbatim, got: %v", files)
+		}
+	})
+
+	t.Run("plain file with trailing-slash dest uses URL basename", func(t *testing.T) {
+		served = "hello"
+		engine := NewEngine()
+		engine.BuildDir = buildDir
+		blob, err := engine.addURL(srv.URL+"/notes.txt", "/docs/", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files := tarFileSet(t, blob)
+		if files["docs/notes.txt"] != "hello" {
+			t.Errorf("unexpected placement: %v", files)
+		}
+	})
+
+	t.Run("plain file without trailing slash renames to dest", func(t *testing.T) {
+		served = "hello"
+		engine := NewEngine()
+		engine.BuildDir = buildDir
+		blob, err := engine.addURL(srv.URL+"/notes.txt", "/etc/motd", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files := tarFileSet(t, blob)
+		if files["etc/motd"] != "hello" {
+			t.Errorf("unexpected placement: %v", files)
+		}
+	})
+}
+
+// TestAdd_MultiSourceSingleLayer: local tars are extracted even among
+// multiple sources, and one ADD instruction yields ONE layer.
+func TestAdd_MultiSourceSingleLayer(t *testing.T) {
+	dir := t.TempDir()
+	inner := makeTarBytes(t, map[string]string{"bin/tool": "tool"})
+	if err := os.WriteFile(filepath.Join(dir, "tool.tar.gz"), compressBytes(t, inner, "gzip"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "readme.md"), []byte("readme"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine := NewEngine()
+	engine.BuildDir = dir
+	blobs, err := engine.addSources([]string{"tool.tar.gz", "readme.md"}, "/opt", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blobs) != 2 {
+		t.Fatalf("expected 2 source blobs, got %d", len(blobs))
+	}
+	merged, err := combineBlobs(blobs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := tarFileSet(t, merged)
+	if files["opt/bin/tool"] != "tool" || files["opt/readme.md"] != "readme" {
+		t.Errorf("unexpected merge: %v", files)
 	}
 }
 

@@ -1,6 +1,7 @@
 package pkg
 
 import (
+	"archive/tar"
 	"fmt"
 	"io"
 	"net/http"
@@ -374,56 +375,111 @@ func (engine *Engine) doAdd(cmd *instructions.AddCommand, img v1.Image) (v1.Imag
 		return nil, err
 	}
 
-	sources := cmd.Sources()
-	dest := cmd.Dest()
+	dest := engine.expandCurArg(cmd.Dest())
 
-	// If there's a URL source, we can only handle one source at a time
-	var tarPath string
+	blobs, err := engine.addSources(cmd.Sources(), dest, extra)
+	if err != nil {
+		return nil, err
+	}
 
-	// Check if source is a URL
-	if len(sources) == 1 && isURL(sources[0]) {
-		tarPath, err = engine.downloadURL(sources[0], dest, extra)
-		if err != nil {
-			return nil, fmt.Errorf("downloading URL %s: %w", sources[0], err)
-		}
-	} else if len(sources) == 1 {
-		// a single source may be a (compressed) tar archive — extractTar
-		// detects by content and falls back to a plain file blob
-		var err error
-		tarPath, err = engine.extractTar(sources[0], dest, extra)
-		if err != nil {
-			return nil, fmt.Errorf("adding %s: %w", sources[0], err)
-		}
-		if tarPath != "" {
-			logrus.Infof("cached blob to: %s", tarPath)
-		}
+	var blobPath string
+	if len(blobs) == 0 {
+		return img, nil
+	} else if len(blobs) == 1 {
+		blobPath = blobs[0]
 	} else {
-		// multiple sources are never extracted (docker semantics)
-		var err error
-		tarPath, err = createBlob(engine.BuildDir, dest, sources, extra...)
-		if err != nil {
+		if blobPath, err = combineBlobs(blobs); err != nil {
 			return nil, err
 		}
-		logrus.Infof("cached blob to: %s", tarPath)
 	}
 
-	var layer v1.Layer
-	layer, err = tarball.LayerFromFile(tarPath, tarball.WithMediaType(engine.LayerType))
+	layer, err := tarball.LayerFromFile(blobPath, tarball.WithMediaType(engine.LayerType))
 	if err != nil {
 		return nil, err
 	}
 
-	img, err = mutate.AppendLayers(img, layer)
+	return mutate.AppendLayers(img, layer)
+}
+
+// addSources processes ADD sources into per-source tar blobs, applying the
+// docker semantics: local tar archives (compression detected by content)
+// are extracted; remote URLs are downloaded and placed verbatim, never
+// decompressed. The caller merges the blobs into a single layer.
+func (engine *Engine) addSources(sources []string, dest string, extra []TarOption) ([]string, error) {
+	// docker: "If you specify multiple source files, either directly or
+	// using a wildcard, then the destination must be a directory" — the
+	// single-file rename semantics only applies with exactly one source
+	if len(sources) > 1 && dest != "" && dest != "." && !strings.HasSuffix(dest, "/") {
+		dest += "/"
+	}
+
+	var blobs []string
+	for _, src := range sources {
+		src = engine.expandCurArg(src)
+		var blob string
+		var err error
+		if isURL(src) {
+			blob, err = engine.addURL(src, dest, extra)
+			if err != nil {
+				return nil, fmt.Errorf("downloading URL %s: %w", src, err)
+			}
+		} else {
+			blob, err = engine.extractTar(src, dest, extra)
+			if err != nil {
+				return nil, fmt.Errorf("adding %s: %w", src, err)
+			}
+			logrus.Infof("cached blob to: %s", blob)
+		}
+		blobs = append(blobs, blob)
+	}
+	return blobs, nil
+}
+
+// combineBlobs merges several tar blobs into a single tar file, removing the
+// inputs. Duplicate directory entries are harmless (later entries win).
+func combineBlobs(blobs []string) (string, error) {
+	out := fmt.Sprintf("/tmp/cigno-combined-%s.tar", uuid.Generate())
+	dst, err := os.Create(out)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
+	defer dst.Close()
+	tw := tar.NewWriter(dst)
+	defer tw.Close()
 
-	// Clean up temp file if it's a downloaded URL
-	if len(sources) == 1 && isURL(sources[0]) {
-		os.Remove(tarPath)
+	for _, blob := range blobs {
+		if err := appendTarFile(tw, blob); err != nil {
+			return "", err
+		}
+		os.Remove(blob)
 	}
+	return out, nil
+}
 
-	return img, nil
+func appendTarFile(tw *tar.Writer, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	tr := tar.NewReader(f)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if hdr.Size > 0 {
+			if _, err := io.Copy(tw, tr); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 // isURL checks if the source is a URL
@@ -432,44 +488,74 @@ func isURL(source string) bool {
 	return err == nil && (u.Scheme == "http" || u.Scheme == "https")
 }
 
-// downloadURL downloads a file from URL and returns the path to the
-// resulting blob. Tar archives (possibly compressed) are extracted, all
-// other files are added as-is — same treatment as local ADD sources.
-func (engine *Engine) downloadURL(urlStr, dest string, extra []TarOption) (string, error) {
-	// Download to temp file
+// addURL downloads a remote file and places it verbatim at dest — remote
+// resources are NEVER decompressed, even for tar archives ("If remote file
+// is a tar archive, the archive is not extracted by default", docker docs).
+//
+// Naming: a dest ending in "/" (or empty) takes the filename from the URL
+// path; otherwise dest itself becomes the filename.
+func (engine *Engine) addURL(urlStr, dest string, extra []TarOption) (string, error) {
 	tempFile, err := os.CreateTemp("", "cigno-download-*")
 	if err != nil {
 		return "", err
 	}
-	defer tempFile.Close()
+	downloadedPath := tempFile.Name()
 
 	resp, err := http.Get(urlStr)
 	if err != nil {
+		os.Remove(downloadedPath)
 		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		os.Remove(downloadedPath)
 		return "", fmt.Errorf("download failed with status: %s", resp.Status)
 	}
 
 	if _, err := io.Copy(tempFile, resp.Body); err != nil {
+		tempFile.Close()
+		os.Remove(downloadedPath)
 		return "", err
 	}
 	tempFile.Close()
-	downloadedPath := tempFile.Name()
 
-	// filename from the URL path, like docker
 	filename := filepath.Base(urlStr)
 	if filename == "" || filename == "." || filename == "/" {
 		filename = "download"
 	}
 
-	blobPath, err := engine.extractTarFile(downloadedPath, filename, dest, extra)
+	// single-file blob: the downloaded file lives outside the build
+	// context, so root the tarball at its parent directory. The tar source
+	// is the actual temp filename; the URL basename is only the name the
+	// entry gets remapped to.
+	tb := NewTarball(filepath.Dir(downloadedPath))
+	tempBase := filepath.Base(downloadedPath)
+
+	destTrimmed := strings.Trim(dest, "/")
+	var destName string
+	if dest == "" || dest == "." || strings.HasSuffix(dest, "/") {
+		destName = filepath.Join(destTrimmed, filename)
+	} else {
+		destName = destTrimmed
+	}
+
+	options := []TarOption{ReplacePrefixPath(tempBase, destName)}
+	options = append(options, extra...)
+
+	blobPath := fmt.Sprintf("/tmp/cigno-url-%s.tar", uuid.Generate())
+	blob, err := fs.Create(blobPath)
 	if err != nil {
+		os.Remove(downloadedPath)
 		return "", err
 	}
+	err = tb.tar(blob, []string{tempBase}, options...)
+	blob.Close()
 	os.Remove(downloadedPath)
+	if err != nil {
+		os.Remove(blobPath)
+		return "", err
+	}
 	return blobPath, nil
 }
 

@@ -141,5 +141,15 @@ its real needs are all COPY/ADD features, now implemented:
 - `RUN` now fails the build with guidance instead of warn-and-skip
 - ADD extraction rewritten to the docker/moby-archive standard: magic-byte
   compression detection (gzip/bzip2/xz), tar-only extraction, `..` traversal
-  rejected, metadata preserved, whiteouts dropped, URLs treated like local
-  files (the old code never extracted compressed archives at all)
+  rejected, metadata preserved, whiteouts dropped. Verified against the
+  official Dockerfile reference and corrected thereunder:
+  - **local** archives are extracted by default (docs: "Local tar archives
+    are extracted by default"; identification "solely based on the contents
+    of the file, not the name of the file")
+  - **remote URLs are never decompressed** (docs: "If remote file is a tar
+    archive, the archive is not extracted by default") — an earlier pass
+    extracted URL downloads, which violated the spec and was fixed
+  - multiple sources: each local tar is extracted, dest is treated as a
+    directory, and one ADD instruction still yields exactly one layer
+  - `ADD --unpack` flag (Dockerfile 1.17+) is a possible future addition
+    for overriding the defaults; not implemented
