@@ -3,6 +3,7 @@ package pkg
 import (
 	"fmt"
 	"os"
+	gopath "path"
 	"path/filepath"
 	"strings"
 
@@ -167,18 +168,43 @@ func (engine *Engine) expandArg(stage *instructions.Stage, expr string) (string,
 			return value
 		}
 
-		return fmt.Sprintf("$%s", s)
+		// docker: prior to its definition (or when undefined), a variable
+		// reference expands to the empty string
+		ok = true
+		return ""
 	})
 	return expr, ok
 }
 
-// expandCurArg expands args against the stage currently being built.
+// expandCurArg expands variables against the stage currently being built.
+// Per docker semantics: ENV values override same-named ARG values, and
+// references to undefined variables expand to the empty string.
 func (engine *Engine) expandCurArg(expr string) string {
 	if engine.curStage == nil {
 		return engine.expandGlobalArg(expr)
 	}
-	out, _ := engine.expandArg(engine.curStage, expr)
-	return out
+	return engine.expandEnvIn(expr, engine.Env[engine.curStage])
+}
+
+// expandEnvIn expands $VAR/${VAR} against env first (ENV overrides ARG),
+// then stage-local and global args; undefined names become "".
+func (engine *Engine) expandEnvIn(expr string, env map[string]string) string {
+	lookup := func(name string) (string, bool) {
+		if v, ok := env[name]; ok {
+			return v, true
+		}
+		if engine.curStage != nil {
+			if v, ok := engine.LocalArgs[engine.curStage][name]; ok {
+				return v, true
+			}
+		}
+		v, ok := engine.GlobalArg[name]
+		return v, ok
+	}
+	return os.Expand(expr, func(s string) string {
+		v, _ := lookup(s)
+		return v
+	})
 }
 
 func (engine *Engine) AllocLocalEnv(stage *instructions.Stage, env []string) {
@@ -295,4 +321,13 @@ func NewTarball(ctx string) *Tarball {
 		Root:       ctx,
 		PreOptions: options,
 	}
+}
+
+// cleanContextSource normalizes a context-relative source path per docker:
+// "Specifying a source path with a leading slash or one that navigates
+// outside the build context, such as COPY ../something, automatically
+// removes any parent directory navigation (../)."
+func cleanContextSource(src string) string {
+	cleaned := gopath.Clean("/" + filepath.ToSlash(src))
+	return strings.TrimPrefix(cleaned, "/")
 }

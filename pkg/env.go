@@ -1,8 +1,6 @@
 package pkg
 
 import (
-	"fmt"
-	"os"
 	"strings"
 
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
@@ -28,27 +26,16 @@ func (engine *Engine) doEnv(stage *instructions.Stage, cmd *instructions.EnvComm
 		key := kv.Key
 		expr := kv.Value
 
-		// expand from arg at first, then from env
-		value, _ := engine.expandArg(stage, expr)
-		value, _ = expandEnv(env, value)
+		// expand against the in-progress stage environment first (so
+		// previously declared ENV wins over same-named ARG), then args;
+		// undefined names expand to "" per docker semantics
+		value := engine.expandEnvIn(expr, env)
 
 		env[key] = value
 		logrus.WithField("key", key).WithField("value", value).Debug("ENV")
 	}
 
 	return nil
-}
-
-func expandEnv(env map[string]string, expr string) (string, bool) {
-	var ok bool
-	res := os.Expand(expr, func(s string) string {
-		var v string
-		if v, ok = env[s]; ok {
-			return v
-		}
-		return fmt.Sprintf("$%s", s)
-	})
-	return res, ok
 }
 
 func parseEnv(env []string) map[string]string {
