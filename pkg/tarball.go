@@ -81,11 +81,15 @@ func (t *Tarball) tar(w io.Writer, paths []string, options ...TarOption) (err er
 	defer tw.Close()
 
 	for _, path := range paths {
-		// path must under build context
+		// path must be under the build context root;
+		// relative paths resolve against the root (not the process cwd)
 		rootPath, _ := filepath.Abs(t.Root)
-		absPath, _ := filepath.Abs(path)
+		absPath := path
+		if !filepath.IsAbs(path) {
+			absPath = filepath.Join(rootPath, path)
+		}
 		if !strings.HasPrefix(absPath, rootPath) {
-			panic("no such file in buildpath")
+			return fmt.Errorf("no such file in buildpath: %s", path)
 		}
 
 		// walk each specified path and add encountered file to tar
@@ -110,17 +114,15 @@ func (t *Tarball) tar(w io.Writer, paths []string, options ...TarOption) (err er
 			hdr.Name = relFilePath
 
 			for _, opt := range t.PreOptions {
-				err := opt(hdr)
-				if err != nil {
-					panic(err)
+				if err := opt(hdr); err != nil {
+					return err
 				}
 			}
 
 			// option modifier
 			for _, opt := range options {
-				err := opt(hdr)
-				if err != nil {
-					panic(err)
+				if err := opt(hdr); err != nil {
+					return err
 				}
 			}
 
@@ -142,30 +144,33 @@ func (t *Tarball) tar(w io.Writer, paths []string, options ...TarOption) (err er
 				return nil
 			}
 
-			{
-				if err := tw.WriteHeader(hdr); err != nil {
-					return err
-				}
-
-				// add file to tar
-				srcFile, err := os.Open(file)
-				if err != nil {
-					return err
-				}
-				defer srcFile.Close()
-				_, err = io.Copy(tw, srcFile)
-				if err != nil {
-					return err
-				}
-				return nil
+			if err := tw.WriteHeader(hdr); err != nil {
+				return err
 			}
+
+			// add file to tar
+			srcFile, err := os.Open(file)
+			if err != nil {
+				return err
+			}
+			defer srcFile.Close()
+			_, err = io.Copy(tw, srcFile)
+			return err
 		}
 
-		// build tar
+		// build tar: walk dirs recursively, add plain files directly
 		isDir, _ := afero.IsDir(fs, absPath)
 		if isDir {
 			if err := filepath.Walk(absPath, walker); err != nil {
-				fmt.Printf("failed to add %s to tar: %s\n", path, err)
+				return fmt.Errorf("failed to add %s to tar: %w", path, err)
+			}
+		} else {
+			finfo, err := os.Lstat(absPath)
+			if err != nil {
+				return fmt.Errorf("failed to add %s to tar: %w", path, err)
+			}
+			if err := walker(absPath, finfo, nil); err != nil {
+				return fmt.Errorf("failed to add %s to tar: %w", path, err)
 			}
 		}
 	}
@@ -176,25 +181,22 @@ func (t *Tarball) tar(w io.Writer, paths []string, options ...TarOption) (err er
 func (t *Tarball) copyFile(dst *tar.Writer, src *tar.Reader, hdr *tar.Header, options ...TarOption) error {
 	// default option modifier
 	for _, opt := range t.PreOptions {
-		err := opt(hdr)
-		if err != nil {
-			panic(err)
+		if err := opt(hdr); err != nil {
+			return err
 		}
 	}
 
 	// option modifier
 	for _, opt := range options {
-		err := opt(hdr)
-		if err != nil {
-			panic(err)
+		if err := opt(hdr); err != nil {
+			return err
 		}
 	}
 
 	// default option modifier
 	for _, opt := range t.PostOptions {
-		err := opt(hdr)
-		if err != nil {
-			panic(err)
+		if err := opt(hdr); err != nil {
+			return err
 		}
 	}
 

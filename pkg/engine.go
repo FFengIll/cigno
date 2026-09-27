@@ -1,14 +1,13 @@
 package pkg
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/docker/distribution/uuid"
 	"cigno/pkg/cache"
+	"github.com/docker/distribution/uuid"
 	"github.com/google/go-containerregistry/pkg/crane"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/types"
@@ -25,6 +24,10 @@ type Engine struct {
 	LocalArgs    map[*instructions.Stage]map[string]string
 	Env          map[*instructions.Stage]map[string]string
 	Cache        *cache.Cache
+
+	// curStage is the stage currently being built, used to expand
+	// stage-scoped args in instruction handlers that have no stage param.
+	curStage *instructions.Stage
 
 	Log *logrus.Logger
 }
@@ -79,7 +82,7 @@ func (engine *Engine) PullImageWithCache(ref string) (v1.Image, error) {
 
 	// Pull from remote
 	logrus.WithField("ref", ref).Info("pulling image")
-	img, err := crane.Pull(ref)
+	img, err := crane.Pull(ref, craneOptions(ref)...)
 	if err != nil {
 		return nil, fmt.Errorf("pulling %s: %w", ref, err)
 	}
@@ -103,7 +106,7 @@ func (engine *Engine) getBase(orig string) (string, error) {
 	if ok {
 		return item.Base, nil
 	}
-	return "", errors.New(fmt.Sprintf("no such base for origal: %s", orig))
+	return "", fmt.Errorf("no such base for original: %s", orig)
 }
 
 func (engine *Engine) getRef(orig string) *BuildContext {
@@ -173,35 +176,52 @@ func (engine *Engine) expandArg(stage *instructions.Stage, expr string) (string,
 	return expr, ok
 }
 
+// expandCurArg expands args against the stage currently being built.
+func (engine *Engine) expandCurArg(expr string) string {
+	if engine.curStage == nil {
+		return engine.expandGlobalArg(expr)
+	}
+	out, _ := engine.expandArg(engine.curStage, expr)
+	return out
+}
+
 func (engine *Engine) AllocLocalEnv(stage *instructions.Stage, env []string) {
 	kv := parseEnv(env)
+	if engine.Env == nil {
+		engine.Env = map[*instructions.Stage]map[string]string{}
+	}
 	engine.Env[stage] = kv
 }
 
-func createBlob(absCtx string, dest string, sources []string) string {
+// createBlob archives the given sources (relative to absCtx) into a temp tar
+// file, applying Docker COPY path semantics for dest:
+//   - single dir source: contents of the dir go under dest
+//   - single file source: file lands at dest (or dest/basename if dest is a dir)
+//   - multiple sources: dest must act as a directory
+func createBlob(absCtx string, dest string, sources []string) (string, error) {
 	tb := NewTarball(absCtx)
 
-	var blob afero.File
-	var err error
 	id := uuid.Generate()
 	path := fmt.Sprintf("/tmp/%s.tar", id)
-	blob, err = fs.Create(path)
+	blob, err := fs.Create(path)
+	if err != nil {
+		return "", fmt.Errorf("creating blob %s: %w", path, err)
+	}
 	defer blob.Close()
+
+	fs := afero.NewOsFs()
+	isDir := func(p string) bool {
+		ok, _ := afero.IsDir(fs, p)
+		return ok
+	}
 
 	var options []TarOption
 	options = append(options, ReplacePrefixPath("./", ""))
-	for _, src := range sources {
-		options = append(options, ReplacePrefixPath(src, dest))
-	}
-	options = append(options, ReplacePrefixPath("/", ""))
-
+	// ref: https://docs.docker.com/engine/reference/builder/#copy
 	switch len(sources) {
 	case 1:
-		// ref: https://docs.docker.com/engine/reference/builder/#copy
-		// for source
 		source := sources[0]
-		fs := afero.NewOsFs()
-		if ok, _ := afero.IsDir(fs, source); ok {
+		if isDir(source) {
 			if !strings.HasSuffix(dest, "/") {
 				dest += "/"
 			}
@@ -210,52 +230,47 @@ func createBlob(absCtx string, dest string, sources []string) string {
 			}
 			options = append(options, ReplacePrefixPath(source, dest))
 			sources[0] = source
+		} else if strings.HasSuffix(dest, "/") {
+			options = append(options, ReplacePrefixPath(source, filepath.Join(dest, filepath.Base(source))))
 		} else {
-			if strings.HasSuffix(dest, "/") {
-				ReplacePrefixPath(filepath.Dir(source)+"/", dest)
-			} else {
-				ReplacePrefixPath(source, dest)
-			}
+			options = append(options, ReplacePrefixPath(source, dest))
 		}
-		break
 	default:
 		if !strings.HasSuffix(dest, "/") {
 			dest += "/"
 		}
-		for _, src := range sources {
-			fs := afero.NewOsFs()
-			if ok, _ := afero.IsDir(fs, src); ok {
+		for i, src := range sources {
+			if isDir(src) {
 				if !strings.HasSuffix(src, "/") {
 					src += "/"
 				}
-				ReplacePrefixPath(src, dest)
+				options = append(options, ReplacePrefixPath(src, dest))
+				sources[i] = src
 			} else {
-				ReplacePrefixPath(filepath.Dir(src)+"/", dest)
+				options = append(options, ReplacePrefixPath(src, filepath.Join(dest, filepath.Base(src))))
 			}
 		}
 	}
 
-	err = tb.tar(blob, sources, options...)
-	if err != nil {
-		panic("")
+	if err := tb.tar(blob, sources, options...); err != nil {
+		return "", fmt.Errorf("archiving sources %v: %w", sources, err)
 	}
-	blob.Close()
 
-	return path
+	return path, nil
 }
 
 func copyBlob(absCtx string, origin string, options ...TarOption) (string, error) {
 	tb := NewTarball(absCtx)
 
-	var err error
-	var blob afero.File
 	id := uuid.Generate()
 	path := fmt.Sprintf("/tmp/%s.tar", id)
-	blob, err = fs.Create(path)
+	blob, err := fs.Create(path)
+	if err != nil {
+		return "", fmt.Errorf("creating blob %s: %w", path, err)
+	}
 	defer blob.Close()
 
-	err = tb.Copy(path, origin, options...)
-	if err != nil {
+	if err := tb.Copy(path, origin, options...); err != nil {
 		return "", err
 	}
 

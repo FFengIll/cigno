@@ -15,7 +15,14 @@ import (
 // ENV PATH=/opt:$PATH
 // The env is stored in engine.Env[stage] and applied later via setEnvVars
 func (engine *Engine) doEnv(stage *instructions.Stage, cmd *instructions.EnvCommand) error {
+	if engine.Env == nil {
+		engine.Env = map[*instructions.Stage]map[string]string{}
+	}
 	var env = engine.Env[stage]
+	if env == nil {
+		env = map[string]string{}
+		engine.Env[stage] = env
+	}
 
 	for _, kv := range cmd.Env {
 		key := kv.Key

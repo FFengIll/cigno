@@ -25,31 +25,38 @@ import (
 // COPY --from=image --base=image / /path2 --chown=xx:xx --chmod=xxx
 // for local file, archive it into a tarball and modify own / mod / root path
 func (engine *Engine) doCopy(cmd *instructions.CopyCommand, img v1.Image) (v1.Image, error) {
-	var err error
 	if cmd.From != "" {
 		return engine.doCopyFrom(cmd, img)
-	} else {
-		// copy via local file system
-
-		// FIXME: for now, we do not extract special files, but copy each blob above base image (just like rebase)
-		tarPath := createBlob(engine.BuildDir, cmd.Dest(), cmd.Sources())
-		logrus.Infof("cached blob to: %s", tarPath)
-
-		// for image file, pull and extract them if possible (only process annotated layers / blobs if possible)
-
-		// append
-		var layer v1.Layer
-		layer, err = tarball.LayerFromFile(tarPath, tarball.WithMediaType(engine.LayerType))
-		// layer ,err = tarball.LayerFromOpener(w, tarball.WithMediaType(layerType))
-		img, err = mutate.AppendLayers(img, layer)
 	}
-	return img, err
+
+	// expand args in sources/dest, e.g. `COPY app-${VERSION} /app`
+	dest := engine.expandCurArg(cmd.Dest())
+	sources := make([]string, len(cmd.Sources()))
+	for i, src := range cmd.Sources() {
+		sources[i] = engine.expandCurArg(src)
+	}
+
+	// copy via local file system
+
+	// FIXME: for now, we do not extract special files, but copy each blob above base image (just like rebase)
+	tarPath, err := createBlob(engine.BuildDir, dest, sources)
+	if err != nil {
+		return nil, err
+	}
+	logrus.Infof("cached blob to: %s", tarPath)
+
+	// for image file, pull and extract them if possible (only process annotated layers / blobs if possible)
+
+	// append
+	layer, err := tarball.LayerFromFile(tarPath, tarball.WithMediaType(engine.LayerType))
+	if err != nil {
+		return nil, err
+	}
+	return mutate.AppendLayers(img, layer)
 }
 
 // copy --from=another_context
 func (engine *Engine) doCopyFrom(cmd *instructions.CopyCommand, img v1.Image) (v1.Image, error) {
-	var options []crane.Option
-
 	// diff image with base
 	// copy the top layers upon base, aka rebase
 	// TODO: validate first
@@ -61,7 +68,7 @@ func (engine *Engine) doCopyFrom(cmd *instructions.CopyCommand, img v1.Image) (v
 		orig = ref.Path
 
 		//
-		origImg, err := crane.Pull(orig, options...)
+		origImg, err := crane.Pull(orig, craneOptions(orig)...)
 		if err != nil {
 			return nil, err
 		}
@@ -102,7 +109,7 @@ func (engine *Engine) doCopyFrom(cmd *instructions.CopyCommand, img v1.Image) (v
 		}
 
 		//
-		baseImg, err := crane.Pull(base, options...)
+		baseImg, err := crane.Pull(base, craneOptions(base)...)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to pull base image")
 		}
@@ -128,7 +135,7 @@ func (engine *Engine) doCopyFrom(cmd *instructions.CopyCommand, img v1.Image) (v
 		options = append(options, ReplacePrefixPath("/", ""))
 		blobPath, err := copyBlob("", tarballPath, options...)
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 		logrus.Infof("cached blob to: %s", blobPath)
 
@@ -149,15 +156,32 @@ func (engine *Engine) doCopyFrom(cmd *instructions.CopyCommand, img v1.Image) (v
 
 func subBaseImage(orig v1.Image, base v1.Image) ([]mutate.Addendum, error) {
 	origLayers, err := orig.Layers()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get layers for original: %w", err)
+	}
 
 	baseLayers, err := base.Layers()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get layers for base: %w", err)
+	}
 
 	// TODO: validate
+	if len(origLayers) < len(baseLayers) {
+		return nil, fmt.Errorf("original has fewer layers (%d) than base (%d), cannot rebase",
+			len(origLayers), len(baseLayers))
+	}
 	for idx, rightLayer := range baseLayers {
 		rightDigest, err := rightLayer.Digest()
-		leftDigest, err := origLayers[idx].Digest()
-		if leftDigest != rightDigest {
+		if err != nil {
 			return nil, err
+		}
+		leftDigest, err := origLayers[idx].Digest()
+		if err != nil {
+			return nil, err
+		}
+		if leftDigest != rightDigest {
+			return nil, fmt.Errorf("layer %d mismatch: original %s != base %s (is the image rebased on the given base?)",
+				idx, leftDigest, rightDigest)
 		}
 	}
 
@@ -199,8 +223,8 @@ func createAddendums(startHistory, startLayer int, history []v1.History, layers 
 	}
 	// In the event history was malformed or non-existent, append the remaining layers.
 	for i := layerIndex; i < len(layers); i++ {
-		if i >= startLayer {
-			adds = append(adds, mutate.Addendum{Layer: layers[layerIndex]})
+		if i+1 >= startLayer {
+			adds = append(adds, mutate.Addendum{Layer: layers[i]})
 		}
 	}
 
@@ -234,7 +258,11 @@ func (engine *Engine) doAdd(cmd *instructions.AddCommand, img v1.Image) (v1.Imag
 			}
 		} else {
 			// Same as COPY for local files
-			tarPath = createBlob(engine.BuildDir, dest, sources)
+			var err error
+			tarPath, err = createBlob(engine.BuildDir, dest, sources)
+			if err != nil {
+				return nil, err
+			}
 			logrus.Infof("cached blob to: %s", tarPath)
 		}
 	}
@@ -352,7 +380,7 @@ func (engine *Engine) extractTar(source, dest string) (string, error) {
 
 	if info.IsDir() {
 		// Directory, just copy it like COPY does
-		return createBlob(engine.BuildDir, dest, []string{source}), nil
+		return createBlob(engine.BuildDir, dest, []string{source})
 	}
 
 	// It's a file, check if it's a tar file by opening it
@@ -367,7 +395,7 @@ func (engine *Engine) extractTar(source, dest string) (string, error) {
 	_, err = tr.Next()
 	if err != nil {
 		// Not a valid tar file, just copy it like COPY does
-		return createBlob(engine.BuildDir, dest, []string{source}), nil
+		return createBlob(engine.BuildDir, dest, []string{source})
 	}
 
 	// Valid tar file - create a new tarball with extracted contents

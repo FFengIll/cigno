@@ -27,17 +27,11 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 	// start from an empty image
 	var img v1.Image
 	img = empty.Image
-	logrus.Debug(img)
-
-	var env []string
-	var envHistory []string
-	logrus.Debug(env)
-	logrus.Debug(envHistory)
 
 	// var dockerfile string
 	stages, globalArgCmds, err := ParseDockerFile(cmdReader)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	for _, cmd := range globalArgCmds {
@@ -60,12 +54,30 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 		// TODO: validate base and tag here
 		basePath, _ := engine.expandArg(&stage, stageImage)
 
+		// validate base image reference
+		if err := ValidateStage(&stage, basePath); err != nil {
+			return err
+		}
+
 		logrus.WithField("stage image", basePath).Info("STAGE")
 
-		// Pull base image (with cache support)
-		base, err := engine.PullImageWithCache(basePath)
-		if err != nil {
-			return fmt.Errorf("pulling %s: %s", stageImage, err)
+		// `scratch` is the reserved empty image: no pull, no layers
+		var base v1.Image
+		var baseDigest v1.Hash
+		if basePath == "scratch" {
+			base = empty.Image
+			baseDigest, _ = base.Digest()
+		} else {
+			// Pull base image (with cache support)
+			var err error
+			base, err = engine.PullImageWithCache(basePath)
+			if err != nil {
+				return fmt.Errorf("pulling %s: %s", stageImage, err)
+			}
+			baseDigest, err = base.Digest()
+			if err != nil {
+				return err
+			}
 		}
 
 		cfg, err := base.ConfigFile()
@@ -77,7 +89,7 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 		// check media type
 		baseMediaType, err := base.MediaType()
 		if err != nil {
-			logrus.Fatalf("getting base image media type: %s", err)
+			return fmt.Errorf("getting base image media type: %w", err)
 		}
 		layerType := types.DockerLayer
 		if baseMediaType == types.OCIManifestSchema1 {
@@ -90,6 +102,7 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 		}
 
 		img = base
+		engine.curStage = &stage
 		for _, ins := range stage.Commands {
 			// process instruction
 			name := ins.Name()
@@ -100,6 +113,8 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 				// now we have a new image with new base
 				// aka. `app / new base`
 				// furthermore, we can build use rebase for image like `comp1 / comp2 / comp3 / new base`
+				logrus.Warn("REBASE command is not yet implemented, skipping")
+				continue
 
 			case command.Copy:
 				copyCmd := ins.(*instructions.CopyCommand)
@@ -215,6 +230,7 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 				}
 				break
 			default:
+				logrus.WithField("instruction", name).Warn("unsupported instruction, skipping")
 				break
 			}
 		}
@@ -226,22 +242,8 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 			cfg.Config.Labels = map[string]string{}
 		}
 
-		// FIXME: we can not add history for current API
-		// for _, ins := range stage.Commands {
-		// 	add := mutate.Addendum{
-		// 		History: v1.History{
-		// 			CreatedBy: ins.Name(),
-		// 		},
-		// 	}
-		// 	img, err = mutate.Append(img, add)
-		// 	if err != nil {
-		// 		return err
-		// 	}
-		// }
-
 		// Update annotations.
 		annotations := map[string]string{}
-		baseDigest, _ := img.Digest()
 		baseName := basePath
 		annotations[specsv1.AnnotationBaseImageName] = baseName
 		annotations[specsv1.AnnotationBaseImageDigest] = baseDigest.String()
@@ -252,9 +254,29 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 		if err := setEnvVars(cfg, env); err != nil {
 			return err
 		}
-		img, err = mutate.Config(img, cfg.Config)
+		var cfgErr error
+		img, cfgErr = mutate.Config(img, cfg.Config)
+		if cfgErr != nil {
+			return cfgErr
+		}
 	}
 	// verify the image if possible
+
+	// ensure a valid OS/arch (FROM scratch has no base config to inherit)
+	if cfgFile, err := img.ConfigFile(); err == nil &&
+		(cfgFile.Architecture == "" || cfgFile.OS == "") {
+		cfgFile = cfgFile.DeepCopy()
+		if cfgFile.Architecture == "" {
+			cfgFile.Architecture = "amd64"
+		}
+		if cfgFile.OS == "" {
+			cfgFile.OS = "linux"
+		}
+		img, err = mutate.ConfigFile(img, cfgFile)
+		if err != nil {
+			return err
+		}
+	}
 
 	// push image
 	for _, opt := range options {
@@ -304,19 +326,4 @@ func addHistory(img v1.Image, createdBy string) (v1.Image, error) {
 		},
 	}
 	return mutate.Append(img, add)
-}
-
-// validation will validate build arguments to confirm it works well
-func validation() {
-
-}
-
-// FIXME: merge the image config field to confirm the output work, e.g. env, user, entrypoint
-// maybe no use
-func mergeConfig() {
-
-}
-
-func mergeEnv() {
-
 }

@@ -46,8 +46,10 @@ func (engine *Engine) doLabel(cmd *instructions.LabelCommand, cfg *v1.ConfigFile
 		cfg.Config.Labels = make(map[string]string)
 	}
 	for _, kv := range cmd.Labels {
-		cfg.Config.Labels[kv.Key] = kv.Value
-		logrus.WithField("key", kv.Key).WithField("value", kv.Value).Debug("LABEL")
+		// expand args/env in label value, e.g. `LABEL version=${VERSION}`
+		value := engine.expandCurArg(kv.Value)
+		cfg.Config.Labels[kv.Key] = value
+		logrus.WithField("key", kv.Key).WithField("value", value).Debug("LABEL")
 	}
 	return nil
 }

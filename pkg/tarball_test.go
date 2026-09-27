@@ -1,80 +1,151 @@
 package pkg
 
 import (
+	"archive/tar"
+	"bytes"
 	"io"
-	"io/ioutil"
-	"log"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/afero"
 )
 
-func TestTarball_tartar(t1 *testing.T) {
-	// manual test
+func TestTarball_tartar(t *testing.T) {
 	fs := afero.NewOsFs()
+
+	// build context in a temp dir
+	ctx := t.TempDir()
+	sub := filepath.Join(ctx, "test", "data", "folder")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "f.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	var options []TarOption
 	options = append(options, ChownOption(0, 0))
 	options = append(options, ChownNameOption("root", "root"))
 	options = append(options, PathPrefixOption("usr/local/tmp/"))
-	options = append(options, ReplacePrefixPath("usr/local/test/", "usr/"))
 
-	path := "/tmp/test.tar"
-	file, _ := fs.Create(path)
-	w := io.Writer(file)
-	tb := Tarball{}
-	if err := tb.tar(w, []string{"test/data/folder"}, options...); err != nil {
-		log.Fatal(err)
+	path := filepath.Join(t.TempDir(), "test.tar")
+	file, err := fs.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tb := NewTarball(ctx)
+	if err := tb.tar(file, []string{filepath.Join("test", "data", "folder")}, options...); err != nil {
+		t.Fatal(err)
 	}
 	file.Close()
 
-	file, _ = fs.Open(path)
-	bs, _ := ioutil.ReadAll(file)
-	log.Print("bytes: ", len(bs))
-
-	// tarPath := "out.tar"
-	// files := map[string]string{
-	// 	"index.html": `<body>Hello!</body>`,
-	// 	"lang.json":  `[{"code":"eng","tag":"English"}]`,
-	// 	"songs.txt":  `Claire de la lune, The Valkyrie, Swan Lake`,
-	// }
-
-	// unit test
-	type args struct {
-		w    io.Writer
-		path []string
+	bs, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	tests := []struct {
-		name    string
-		args    args
-		wantErr bool
-	}{
-		// TODO: Add test cases.
+	if len(bs) == 0 {
+		t.Fatal("tar is empty")
 	}
-	for _, tt := range tests {
-		t1.Run(tt.name, func(t1 *testing.T) {
-			t := &Tarball{}
-			if err := t.tar(tt.args.w, tt.args.path); (err != nil) != tt.wantErr {
-				t1.Errorf("tar() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
+
+	// verify entries carry the prefix
+	tr := tar.NewReader(bytes.NewReader(bs))
+	found := false
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasSuffix(hdr.Name, "f.txt") && strings.HasPrefix(hdr.Name, "usr/local/tmp/") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected prefixed entry not found in tar")
+	}
+}
+
+// TestTarball_singleFile ensures a plain file source lands in the tar.
+func TestTarball_singleFile(t *testing.T) {
+	ctx := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ctx, "marker"), []byte("m"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(t.TempDir(), "single.tar")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tb := NewTarball(ctx)
+	if err := tb.tar(f, []string{"marker"}, ReplacePrefixPath("marker", "dest/marker")); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	tr := tar.NewReader(open(t, path))
+	hdr, err := tr.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hdr.Name != "dest/marker" {
+		t.Errorf("entry = %s, want dest/marker", hdr.Name)
+	}
+	bs, _ := io.ReadAll(tr)
+	if string(bs) != "m" {
+		t.Errorf("content = %q, want m", bs)
 	}
 }
 
 func TestTarball_Copy(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "in.tar")
 
-	var options []TarOption
-	options = append(options, ChownOption(0, 0))
-	options = append(options, ChownNameOption("root", "root"))
-	options = append(options, PathPrefixOption("usr/local/tmp/"))
-	options = append(options, ReplacePrefixPath("usr/local/test/", "usr/"))
-
-	src := "./test/data/tarball.tar"
-	dst := "./test/data/tarball-copy.tar"
-	tb := NewTarball("./")
-
-	err := tb.Copy(dst, src)
+	// build source tar with two entries
+	f, err := os.Create(src)
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
+	tw := tar.NewWriter(f)
+	for _, name := range []string{"a/b.txt", "c.txt"} {
+		tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: 1})
+		tw.Write([]byte("x"))
+	}
+	tw.Close()
+	f.Close()
+
+	dst := filepath.Join(dir, "out.tar")
+	tb := NewTarball(dir)
+	if err := tb.Copy(dst, src, ReplacePrefixPath("a/", "renamed/")); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := tar.NewReader(open(t, dst))
+	names := map[string]bool{}
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		names[hdr.Name] = true
+	}
+	if !names["renamed/b.txt"] || !names["c.txt"] {
+		t.Errorf("unexpected entries: %v", names)
+	}
+}
+
+func open(t *testing.T, path string) *os.File {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
 }
