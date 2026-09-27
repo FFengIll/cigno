@@ -120,7 +120,7 @@ task --list  # see all tasks
 
 Repository layout: `cmd/` (CLI: build, registry, cache, version) ·
 `pkg/` (engine, copy/add, archive detection, tar tooling, cache,
-`registry/` embedded server) · `docs/` (architecture, specs, audits) ·
+`registry/` embedded server) · `.design/` (architecture, specs, audits) ·
 `.github/` (CI + release workflows).
 
 ### Design constraints
@@ -139,7 +139,7 @@ Repository layout: `cmd/` (CLI: build, registry, cache, version) ·
 | [Semantics Audit (2026-09)](.design/20260927-semantics-audit.md) | per-instruction spec alignment + tests |
 | [Value Assessment & Direction (2026-09)](.design/20260926-assessment-and-direction.md) | positioning, decisions, changelog |
 | [Design Roadmap (2026-01)](.design/20260121-design-roadmap.md) | historical spec (partially superseded) |
-| [Architecture](.design/20260121-arch.md) · [Rebase Guide](docs/rebase.md) | internals |
+| [Architecture](.design/20260121-arch.md) | internals |
 
 ## License
 
