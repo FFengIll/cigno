@@ -129,3 +129,17 @@ All four gaps above were closed the next day:
   build times instead of zero values.
 - **Release packaging**: goreleaser config (linux/darwin, amd64/arm64)
   plus a tag-triggered release workflow; `cigno --version` added.
+
+## 6. COPY/ADD Completion Pass (2026-09-27)
+
+The "limited RUN" whitelist from the 2026-01 roadmap is formally retired:
+its real needs are all COPY/ADD features, now implemented:
+
+- `COPY/ADD --chown/--chmod` wired through (numeric ids + root; unresolvable
+  names error with a hint; verbatim mode like docker; applied on all
+  path-level paths, ignored-with-warning on verbatim image rebase)
+- `RUN` now fails the build with guidance instead of warn-and-skip
+- ADD extraction rewritten to the docker/moby-archive standard: magic-byte
+  compression detection (gzip/bzip2/xz), tar-only extraction, `..` traversal
+  rejected, metadata preserved, whiteouts dropped, URLs treated like local
+  files (the old code never extracted compressed archives at all)

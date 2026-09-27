@@ -50,7 +50,7 @@ cigno build -f Dockerfile --no-cache -t myapp:latest
 |-------------|--------|-------|
 | `FROM` | ✅ | Pulls base image with cache support; `scratch` supported |
 | `COPY` | ✅ | Local files/dirs, wildcards (`.dockerignore` honored), `--from` image rebase / tarball / **stage name** (path-level), ARG expansion |
-| `ADD` | ✅ | Like COPY + URL download + auto-extract |
+| `ADD` | ✅ | Like COPY + URL download + auto-extract (tar/tar.gz/tgz/tar.bz2/tar.xz — detected by content, not extension); compressed non-tar files are added verbatim |
 | `ENV` | ✅ | With `$VAR` expansion |
 | `ARG` | ✅ | Global and local scope; in-stage `ARG KEY` inherits global default |
 | `WORKDIR` | ✅ | Config field |
