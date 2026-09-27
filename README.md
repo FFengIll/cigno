@@ -53,6 +53,8 @@ cigno build -f Dockerfile --validate               # parse-only check
 cigno build -f Dockerfile --build-arg VERSION=1.2.3 ...
 cigno build -f Dockerfile -c /path/to/context ...  # custom build context
 cigno build -f Dockerfile --no-cache ...           # skip the base-image disk cache
+cigno save myreg/app:v1 -o app.tar                 # export a pushed image to a docker-loadable tar
+cigno load app.tar -t myreg/app:v1                 # import a docker-save tar and push it to a registry
 ```
 
 ## Dockerfile support

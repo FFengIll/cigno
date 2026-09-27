@@ -51,13 +51,15 @@ tasks:
       - go run . registry start --addr {{.REGISTRY_ADDR}} --storage {{.REGISTRY_STORAGE}}
 
   e2e-demo:
-    desc: End-to-end demo — registry + build + save tar (dogfood)
+    desc: End-to-end demo — registry + build + save/load tar round trip (dogfood)
     deps: [build]
     cmds:
       - mkdir -p {{.REGISTRY_STORAGE}}
       - ./{{.BINARY}} registry start --addr {{.REGISTRY_ADDR}} --storage {{.REGISTRY_STORAGE}} &
       - sleep 1
-      - cd test/data && ../../{{.BINARY}} build -f alpine.Dockerfile -c . -o /tmp/cigno-demo.tar || true
+      - cd test/data && ../../{{.BINARY}} build -f alpine.Dockerfile -c . -t {{.REGISTRY_ADDR}}/demo:v1 || true
+      - ./{{.BINARY}} save {{.REGISTRY_ADDR}}/demo:v1 -o /tmp/cigno-demo.tar
+      - ./{{.BINARY}} load /tmp/cigno-demo.tar -t {{.REGISTRY_ADDR}}/demo:v2
       - kill %1 || true
 
   clean:
