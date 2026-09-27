@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/docker/distribution/uuid"
@@ -35,6 +36,13 @@ func (engine *Engine) doCopy(cmd *instructions.CopyCommand, img v1.Image) (v1.Im
 	sources := make([]string, len(cmd.Sources()))
 	for i, src := range cmd.Sources() {
 		sources[i] = engine.expandCurArg(src)
+	}
+
+	// expand wildcards in sources, e.g. `COPY dist/*.txt /data/`
+	var err error
+	sources, err = expandWildcards(engine.BuildDir, sources)
+	if err != nil {
+		return nil, err
 	}
 
 	// copy via local file system
@@ -287,6 +295,39 @@ func createAddendums(startHistory, startLayer int, history []v1.History, layers 
 	}
 
 	return adds
+}
+
+// expandWildcards resolves glob patterns in COPY sources against the build
+// context. Non-pattern sources pass through unchanged; patterns with no
+// matches are an error (like docker). Matches are returned relative to the
+// build dir so downstream path remapping keeps working.
+func expandWildcards(buildDir string, sources []string) ([]string, error) {
+	var out []string
+	for _, src := range sources {
+		if !containsWildcard(src) {
+			out = append(out, src)
+			continue
+		}
+		pattern := src
+		if !filepath.IsAbs(pattern) {
+			pattern = filepath.Join(buildDir, pattern)
+		}
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("bad COPY pattern %q: %w", src, err)
+		}
+		if len(matches) == 0 {
+			return nil, fmt.Errorf("COPY source %q matched no files", src)
+		}
+		sort.Strings(matches)
+		for _, m := range matches {
+			if rel, err := filepath.Rel(buildDir, m); err == nil && !strings.HasPrefix(rel, "..") {
+				m = rel
+			}
+			out = append(out, m)
+		}
+	}
+	return out, nil
 }
 
 // doAdd handles ADD command

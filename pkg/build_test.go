@@ -235,6 +235,45 @@ COPY --from=%s / /
 	}
 }
 
+func TestEngine_Build_CopyWildcard(t *testing.T) {
+	buildDir, err := filepath.Abs("./testdata")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	df := `
+FROM scratch
+COPY wild/*.txt /data/
+`
+
+	engine := NewEngine()
+	engine.BuildDir = buildDir
+
+	out := filepath.Join(t.TempDir(), "out.tar")
+	if err := engine.Build(strings.NewReader(df), OutFileOption(out, "wild:test")); err != nil {
+		t.Fatal(err)
+	}
+
+	img, err := tarball.ImageFromPath(out, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertImageHasFileContent(t, img, "/data/a.txt", "a\n")
+	assertImageHasFileContent(t, img, "/data/b.txt", "b\n")
+	files := extractFileSet(t, img)
+	if _, ok := files["data/c.log"]; ok {
+		t.Error("c.log should not match *.txt")
+	}
+
+	// a wildcard matching nothing must fail the build
+	engine2 := NewEngine()
+	engine2.BuildDir = buildDir
+	err = engine2.Build(strings.NewReader("FROM scratch\nCOPY wild/*.nothing /data/\n"))
+	if err == nil {
+		t.Error("expected no-match wildcard to fail")
+	}
+}
+
 func TestEngine_Build_InvalidBaseRef(t *testing.T) {
 	engine := NewEngine()
 	err := engine.Build(strings.NewReader("FROM this is not a ref\n"))
