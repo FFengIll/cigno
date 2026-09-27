@@ -131,6 +131,56 @@ COPY folder/file /marker
 	assertImageHasFileContent(t, img, "/marker", "file content")
 }
 
+func TestEngine_Build_MultiStageCopyFromStage(t *testing.T) {
+	addr := startTestRegistry(t)
+	xRef := pushBase(t, addr, "test/x", "latest")
+	yRef := pushBase(t, addr, "test/y", "latest")
+
+	buildDir, err := filepath.Abs("./testdata")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// multi-stage: build in stage `builder`, copy paths out into the
+	// final stage (docker semantics — path-level, not layer rebase)
+	df := fmt.Sprintf(`
+FROM %s AS builder
+COPY folder /build
+FROM %s
+COPY --from=builder /build /app
+`, xRef, yRef)
+
+	engine := NewEngine()
+	engine.BuildDir = buildDir
+
+	out := filepath.Join(t.TempDir(), "out.tar")
+	if err := engine.Build(strings.NewReader(df), OutFileOption(out, "multi:test")); err != nil {
+		t.Fatal(err)
+	}
+
+	img, err := tarball.ImageFromPath(out, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertImageHasFileContent(t, img, "/app/file", "file content")
+	// the final stage's own base must be present, the builder's base must not
+	assertImageHasFileContent(t, img, "/base-file", "base")
+	files := extractFileSet(t, img)
+	if _, ok := files["build/file"]; ok {
+		t.Error("builder stage filesystem leaked into final image (/build)")
+	}
+
+	yImg, err := crane.Pull(yRef, crane.Insecure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	yLayers, _ := yImg.Layers()
+	appLayers, _ := img.Layers()
+	if len(appLayers) != len(yLayers)+1 {
+		t.Errorf("expected %d layers (final base + 1 copied layer), got %d", len(yLayers)+1, len(appLayers))
+	}
+}
+
 func TestEngine_Build_CopyFromRebase(t *testing.T) {
 	addr := startTestRegistry(t)
 	baseRef := pushBase(t, addr, "test/base", "latest")

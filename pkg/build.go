@@ -259,6 +259,14 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 		if cfgErr != nil {
 			return cfgErr
 		}
+
+		// record the finished stage for `COPY --from=<stage>`
+		if stageName != "" {
+			if engine.BuiltStages == nil {
+				engine.BuiltStages = map[string]v1.Image{}
+			}
+			engine.BuiltStages[stageName] = img
+		}
 	}
 	// verify the image if possible
 

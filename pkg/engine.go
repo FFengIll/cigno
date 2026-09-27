@@ -25,6 +25,10 @@ type Engine struct {
 	Env          map[*instructions.Stage]map[string]string
 	Cache        *cache.Cache
 
+	// BuiltStages holds the finished image of each named stage, so that
+	// `COPY --from=<stage>` copies from the stage's built state.
+	BuiltStages map[string]v1.Image
+
 	// curStage is the stage currently being built, used to expand
 	// stage-scoped args in instruction handlers that have no stage param.
 	curStage *instructions.Stage
@@ -54,6 +58,7 @@ func NewEngine() *Engine {
 		GlobalArg:    map[string]string{},
 		LocalArgs:    map[*instructions.Stage]map[string]string{},
 		Env:          map[*instructions.Stage]map[string]string{},
+		BuiltStages:  map[string]v1.Image{},
 		Log:          logrus.New(),
 	}
 }

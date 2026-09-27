@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/docker/distribution/uuid"
 	"github.com/google/go-containerregistry/pkg/crane"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
@@ -62,6 +63,12 @@ func (engine *Engine) doCopyFrom(cmd *instructions.CopyCommand, img v1.Image) (v
 	// TODO: validate first
 	orig := cmd.From
 	ref := engine.getRef(orig)
+
+	// a built stage wins over any context mapping: docker semantics —
+	// copy the given paths out of the stage's filesystem
+	if stageImg, ok := engine.BuiltStages[orig]; ok {
+		return engine.copyFromImageFS(cmd, stageImg, img)
+	}
 
 	switch ref.Type {
 	case ImageRef:
@@ -152,6 +159,57 @@ func (engine *Engine) doCopyFrom(cmd *instructions.CopyCommand, img v1.Image) (v
 		break
 	}
 	return img, nil
+}
+
+// copyFromImageFS copies paths out of a built stage's filesystem
+// (docker `COPY --from=<stage>` semantics): the stage image is flattened
+// and the requested paths are archived into a new layer on dst.
+func (engine *Engine) copyFromImageFS(cmd *instructions.CopyCommand, src v1.Image, dst v1.Image) (v1.Image, error) {
+	// flatten the stage filesystem to a temp tar
+	tmp := fmt.Sprintf("/tmp/cigno-stagefs-%s.tar", uuid.Generate())
+	f, err := fs.Create(tmp)
+	if err != nil {
+		return nil, fmt.Errorf("creating stage fs blob: %w", err)
+	}
+	r := mutate.Extract(src)
+	_, err = io.Copy(f, r)
+	r.Close()
+	f.Close()
+	if err != nil {
+		os.Remove(tmp)
+		return nil, fmt.Errorf("flattening stage filesystem: %w", err)
+	}
+	defer os.Remove(tmp)
+
+	// copy each source path with dest remap, like the tarball source path
+	dest := engine.expandCurArg(cmd.Dest())
+	for _, source := range cmd.Sources() {
+		source = engine.expandCurArg(source)
+
+		srcName := strings.TrimPrefix(filepath.ToSlash(source), "/")
+		destName := strings.TrimPrefix(filepath.ToSlash(dest), "/")
+		var options []TarOption
+		// mutate.Extract emits absolute names ("/build/file"): normalize
+		// to relative first, then remap source -> dest
+		options = append(options, ReplacePrefixPath("/", ""))
+		options = append(options, ReplacePrefixPath(srcName, destName))
+
+		blobPath, err := copyBlob("", tmp, options...)
+		if err != nil {
+			return nil, fmt.Errorf("copying %q from stage: %w", source, err)
+		}
+		logrus.Infof("cached blob to: %s", blobPath)
+
+		layer, err := tarball.LayerFromFile(blobPath, tarball.WithMediaType(engine.LayerType))
+		if err != nil {
+			return nil, err
+		}
+		dst, err = mutate.AppendLayers(dst, layer)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return dst, nil
 }
 
 func subBaseImage(orig v1.Image, base v1.Image) ([]mutate.Addendum, error) {
