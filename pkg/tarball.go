@@ -207,6 +207,27 @@ func (t *Tarball) tar(w io.Writer, paths []string, options ...TarOption) (err er
 }
 
 func (t *Tarball) copyFile(dst *tar.Writer, src *tar.Reader, hdr *tar.Header, options ...TarOption) error {
+	// honor exclusions (whiteouts, .dockerignore-style filters)
+	if t.Skip != nil && t.Skip(hdr.Name) {
+		// drain the entry body so the reader stays in sync
+		if _, err := io.Copy(io.Discard, src); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	// security: refuse entries attempting path traversal, then normalize
+	for _, part := range strings.Split(hdr.Name, "/") {
+		if part == ".." {
+			return fmt.Errorf("refusing unsafe tar entry %q: path traversal is not allowed", hdr.Name)
+		}
+	}
+	name := gopath.Clean("/" + strings.ReplaceAll(hdr.Name, "\\", "/"))
+	if name == "/" || name == "." {
+		return nil // the archive root itself
+	}
+	hdr.Name = strings.TrimPrefix(name, "/")
+
 	// default option modifier
 	for _, opt := range t.PreOptions {
 		if err := opt(hdr); err != nil {
@@ -259,7 +280,13 @@ func (t *Tarball) Copy(dstName string, srcName string, options ...TarOption) (er
 		return err
 	}
 	defer srcFile.Close()
-	srcReader := tar.NewReader(srcFile)
+	return t.CopyFromReader(dstName, srcName, srcFile, options...)
+}
+
+// CopyFromReader rewrites a tar stream from r into the file dstName,
+// applying options to every entry header.
+func (t *Tarball) CopyFromReader(dstName string, srcName string, r io.Reader, options ...TarOption) (err error) {
+	srcReader := tar.NewReader(r)
 
 	dstFile, err := os.Create(dstName)
 	if err != nil {

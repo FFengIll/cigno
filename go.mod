@@ -34,7 +34,7 @@ require (
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1
-	github.com/vbatts/tar-split v0.12.2
+	github.com/vbatts/tar-split v0.12.2 // indirect
 	golang.org/x/sys v0.40.0 // indirect
 	golang.org/x/text v0.33.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
@@ -43,6 +43,7 @@ require (
 require (
 	github.com/moby/patternmatcher v0.6.1
 	github.com/spf13/cobra v1.10.2
+	github.com/ulikunitz/xz v0.5.17
 )
 
 require (
