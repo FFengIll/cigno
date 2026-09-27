@@ -91,13 +91,6 @@ COPY --from=base / /
 COPY app /usr/local/bin/app
 ```
 
-### Tarball as Source
-
-```dockerfile
-FROM alpine:latest
-COPY --from=tarball://./artifacts.tar.gz / /usr/local/
-```
-
 ### Build Context Options
 
 ```bash

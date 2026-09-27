@@ -84,20 +84,13 @@ var buildCmd = &cobra.Command{
 			engine.WithGlobalArg(ss[0], ss[1])
 		}
 
-		// base image mapping / tarball / folder contexts
+		// base image mapping / folder contexts
 		for _, item := range imageBaseArray {
 			ss := strings.SplitN(item, "=", 2)
 			if len(ss) != 2 {
 				return fmt.Errorf("invalid image-base %q, expected `image=base`", item)
 			}
 			engine.AddBase(ss[0], ss[1])
-		}
-		for _, item := range tarballArray {
-			ss := strings.SplitN(item, "=", 2)
-			if len(ss) != 2 {
-				return fmt.Errorf("invalid tarball %q, expected `name=path`", item)
-			}
-			engine.AddTarball(ss[0], ss[1])
 		}
 		for _, item := range folderArray {
 			ss := strings.SplitN(item, "=", 2)
@@ -146,7 +139,6 @@ func init() {
 	flags.BoolVar(&dryRun, "dry-run", false, "")
 	flags.BoolVarP(&validate, "validate", "v", false, "")
 	flags.StringArrayVar(&imageBaseArray, "image-base", []string{}, "map an image name to a base ref (`image=base`)")
-	flags.StringArrayVar(&tarballArray, "tarball", []string{}, "add a tarball source (`name=path`)")
 	flags.StringArrayVar(&folderArray, "folder", []string{}, "add a folder source (`name=path`)")
 	flags.StringVarP(&outFile, "output-file", "o", "", "save the image to a docker-load-able tar file instead of pushing")
 	flags.StringArray("build-arg", []string{}, "set a build arg (`key=value`)")

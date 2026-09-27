@@ -10,7 +10,6 @@ import (
 
 var (
 	imageBaseArray []string
-	tarballArray   []string
 	folderArray    []string
 	dockerfile     = "./Dockerfile"
 	buildDir       = "."

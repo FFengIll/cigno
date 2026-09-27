@@ -173,31 +173,6 @@ func (engine *Engine) doCopyFrom(cmd *instructions.CopyCommand, img v1.Image) (v
 			return nil, err
 		}
 		break
-	case TarballRef:
-		tarballPath := ref.Path
-
-		var options []TarOption
-		options = append(options, ReplacePrefixPath("./", ""))
-		options = append(options, ReplacePrefixPath(cmd.Sources()[0], cmd.Dest()))
-		options = append(options, ReplacePrefixPath("/", ""))
-		options = append(options, extra...)
-		blobPath, err := copyBlob("", tarballPath, options...)
-		if err != nil {
-			return nil, err
-		}
-		logrus.Infof("cached blob to: %s", blobPath)
-
-		var layer v1.Layer
-		layer, err = tarball.LayerFromFile(blobPath, tarball.WithMediaType(engine.LayerType))
-		// layer ,err = tarball.LayerFromOpener(w, tarball.WithMediaType(layerType))
-		if err != nil {
-			return nil, err
-		}
-		img, err = mutate.AppendLayers(img, layer)
-		if err != nil {
-			return nil, err
-		}
-		break
 	}
 	return img, nil
 }

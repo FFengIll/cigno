@@ -46,9 +46,8 @@ type BuildContext struct {
 type refType string
 
 const (
-	ImageRef   refType = "image-ref"
-	TarballRef refType = "tarball-ref"
-	PathRef    refType = "path-ref"
+	ImageRef refType = "image-ref"
+	PathRef  refType = "path-ref"
 )
 
 func NewEngine() *Engine {
@@ -128,14 +127,6 @@ func (engine *Engine) AddBase(image string, base string) {
 		Type: ImageRef,
 		Path: image,
 		Base: base,
-	}
-}
-
-func (engine *Engine) AddTarball(name string, path string) {
-	engine.BuildContext[name] = &BuildContext{
-		Type: TarballRef,
-		Path: path,
-		Base: "",
 	}
 }
 
