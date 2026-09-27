@@ -53,7 +53,8 @@ func (engine *Engine) doCopy(cmd *instructions.CopyCommand, img v1.Image) (v1.Im
 	dest := engine.expandCurArg(cmd.Dest())
 	sources := make([]string, len(cmd.Sources()))
 	for i, src := range cmd.Sources() {
-		sources[i] = engine.expandCurArg(src)
+		// leading slashes and ../ navigation are stripped, per docker
+		sources[i] = cleanContextSource(engine.expandCurArg(src))
 	}
 
 	// --chown/--chmod apply to every archived entry (verbatim, like docker)
@@ -399,7 +400,8 @@ func (engine *Engine) addSources(sources []string, dest string, extra []TarOptio
 				return nil, fmt.Errorf("downloading URL %s: %w", src, err)
 			}
 		} else {
-			blob, err = engine.extractTar(src, dest, extra)
+			// leading slashes and ../ navigation are stripped, per docker
+			blob, err = engine.extractTar(cleanContextSource(src), dest, extra)
 			if err != nil {
 				return nil, fmt.Errorf("adding %s: %w", src, err)
 			}
