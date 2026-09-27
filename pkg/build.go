@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
@@ -271,18 +272,27 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 	// verify the image if possible
 
 	// ensure a valid OS/arch (FROM scratch has no base config to inherit)
-	if cfgFile, err := img.ConfigFile(); err == nil &&
-		(cfgFile.Architecture == "" || cfgFile.OS == "") {
+	if cfgFile, err := img.ConfigFile(); err == nil {
 		cfgFile = cfgFile.DeepCopy()
+		changed := false
 		if cfgFile.Architecture == "" {
 			cfgFile.Architecture = "amd64"
+			changed = true
 		}
 		if cfgFile.OS == "" {
 			cfgFile.OS = "linux"
+			changed = true
 		}
-		img, err = mutate.ConfigFile(img, cfgFile)
-		if err != nil {
-			return err
+		// stamp a real build time (scratch builds inherit no timestamp)
+		if cfgFile.Created.IsZero() {
+			cfgFile.Created = v1.Time{Time: time.Now().UTC()}
+			changed = true
+		}
+		if changed {
+			img, err = mutate.ConfigFile(img, cfgFile)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -329,6 +339,7 @@ func setEnvVars(cfg *v1.ConfigFile, envVars map[string]string) error {
 func addHistory(img v1.Image, createdBy string) (v1.Image, error) {
 	add := mutate.Addendum{
 		History: v1.History{
+			Created:    v1.Time{Time: time.Now().UTC()},
 			CreatedBy:  createdBy,
 			EmptyLayer: true,
 		},

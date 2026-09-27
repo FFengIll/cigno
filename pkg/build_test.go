@@ -76,6 +76,20 @@ ENV PATH=/data:$PATH
 	}
 	assertImageHasFileContent(t, img, "/data/file", "file content")
 	assertImageEnv(t, img, "PATH", "/data")
+
+	// build must stamp a real creation time
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Created.IsZero() || cfg.Created.Year() < 2000 {
+		t.Errorf("image created time not stamped: %v", cfg.Created)
+	}
+	for _, h := range cfg.History {
+		if h.CreatedBy == "ENV PATH=/data:$PATH" && (h.Created.IsZero() || h.Created.Year() < 2000) {
+			t.Errorf("history entry created time not stamped: %+v", h)
+		}
+	}
 }
 
 func TestEngine_Build_FromScratch(t *testing.T) {
