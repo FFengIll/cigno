@@ -47,14 +47,15 @@ Prebuilt binaries for linux/darwin (amd64/arm64) are attached to releases
 ## Quick Start
 
 ```bash
-cigno build -f Dockerfile -t myapp:latest          # build & push
-cigno build -f Dockerfile -o myapp.tar             # …or save a docker-loadable tar
+cigno build -f Dockerfile -t myapp:latest          # build & export myapp-latest.tar
+cigno build -f Dockerfile -t myapp:latest --push   # build & push to a registry
+cigno build -f Dockerfile -o myapp.tar             # …or an explicit archive path
+cigno load myapp-latest.tar -t myreg/app:v1        # push an archive to a registry
+cigno save myreg/app:v1 -o app.tar                 # export a pushed image to a tar
 cigno build -f Dockerfile --validate               # parse-only check
 cigno build -f Dockerfile --build-arg VERSION=1.2.3 ...
 cigno build -f Dockerfile -c /path/to/context ...  # custom build context
 cigno build -f Dockerfile --no-cache ...           # skip the base-image disk cache
-cigno save myreg/app:v1 -o app.tar                 # export a pushed image to a docker-loadable tar
-cigno load app.tar -t myreg/app:v1                 # import a docker-save tar and push it to a registry
 ```
 
 ## Dockerfile support

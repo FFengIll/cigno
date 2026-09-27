@@ -33,6 +33,7 @@ var buildCmd = &cobra.Command{
 		doPush, _ := cmd.Flags().GetBool("push")
 		outFile, _ := cmd.Flags().GetString("output-file")
 		noCache, _ := cmd.Flags().GetBool("no-cache")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		logrus.WithField("dockerfile", dockerfile).
 			WithField("tag", tags).
 			WithField("args", buildArgs).
@@ -109,18 +110,35 @@ var buildCmd = &cobra.Command{
 
 		var options []pkg.BuildOption
 		options = append(options, pkg.PrintHistoryOption())
-		if outFile != "" {
+
+		if dryRun {
+			logrus.Info("dry-run: built image in memory, no output written")
+			return engine.Build(
+				bytes.NewReader(bs),
+				options...,
+			)
+		}
+
+		// with a tag but no explicit output, export an archive ready for
+		// later push (`cigno load` / `docker load`)
+		if outFile == "" && !doPush {
 			if len(tags) == 0 {
-				tags = []string{"cigno:latest"}
+				return fmt.Errorf("nothing to produce: pass -t `name:tag` (exports <tag>.tar), -o FILE, or --push; use --dry-run for no output")
 			}
+			outFile = archiveNameFor(tags[0])
+			logrus.WithField("output", outFile).Info("no -o given, exporting archive")
+		}
+		if len(tags) == 0 {
+			tags = []string{"cigno:latest"}
+		}
+		if outFile != "" {
 			options = append(options, pkg.OutFileOption(outFile, tags[0]))
-		} else if doPush {
+		}
+		if doPush {
 			if len(tags) == 0 {
 				return fmt.Errorf("push requires at least one -t tag")
 			}
 			options = append(options, pkg.PushOption(tags))
-		} else {
-			logrus.Warn("no -o output or --push given, running as dry-run (no output)")
 		}
 
 		return engine.Build(
@@ -136,7 +154,7 @@ func init() {
 	buildCmd.MarkFlagRequired("file")
 	flags.StringVarP(&buildDir, "context", "c", buildDir, "build context dir")
 	flags.StringArrayP("tag", "t", []string{}, "tag used in the `name:tag` format")
-	flags.BoolVar(&dryRun, "dry-run", false, "")
+	flags.BoolVar(&dryRun, "dry-run", false, "build in memory without writing an archive or pushing")
 	flags.BoolVarP(&validate, "validate", "v", false, "")
 	flags.StringArrayVar(&imageBaseArray, "image-base", []string{}, "map an image name to a base ref (`image=base`)")
 	flags.StringArrayVar(&folderArray, "folder", []string{}, "add a folder source (`name=path`)")
@@ -146,4 +164,19 @@ func init() {
 	flags.Bool("rebase-as-copy", false, "use rebase to replace `COPY --from`")
 	flags.Bool("no-cache", false, "disable the local base image cache")
 	flags.String("env-strategy", "keep", fmt.Sprintf("strategy to process env. (%s)", envStrategy))
+}
+
+// archiveNameFor derives a local archive filename from an image tag,
+// e.g. `myreg.io/team/app:v1` -> `myreg.io-team-app-v1.tar`.
+func archiveNameFor(tag string) string {
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '-', r == '_':
+			return r
+		default:
+			return '-'
+		}
+	}, tag)
+	return safe + ".tar"
 }
