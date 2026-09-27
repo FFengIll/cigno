@@ -27,6 +27,10 @@ type Tarball struct {
 	Root        string
 	PreOptions  []TarOption
 	PostOptions []TarOption
+
+	// Skip, when set, excludes context-relative paths from the archive.
+	// Returning true for a directory skips its whole subtree.
+	Skip func(rel string) bool
 }
 
 type TarOption func(hdr *tar.Header) error
@@ -112,6 +116,14 @@ func (t *Tarball) tar(w io.Writer, paths []string, options ...TarOption) (err er
 
 			// ensure header has relative file path
 			hdr.Name = relFilePath
+
+			// honor exclusions (.dockerignore) before any work
+			if t.Skip != nil && relFilePath != "." && t.Skip(relFilePath) {
+				if finfo.Mode().IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
 
 			for _, opt := range t.PreOptions {
 				if err := opt(hdr); err != nil {

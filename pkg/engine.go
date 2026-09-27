@@ -206,6 +206,13 @@ func (engine *Engine) AllocLocalEnv(stage *instructions.Stage, env []string) {
 func createBlob(absCtx string, dest string, sources []string) (string, error) {
 	tb := NewTarball(absCtx)
 
+	// honor .dockerignore from the build context root
+	skip, err := newDockerIgnoreMatcher(absCtx)
+	if err != nil {
+		return "", err
+	}
+	tb.Skip = skip
+
 	id := uuid.Generate()
 	path := fmt.Sprintf("/tmp/%s.tar", id)
 	blob, err := fs.Create(path)
@@ -222,6 +229,15 @@ func createBlob(absCtx string, dest string, sources []string) (string, error) {
 
 	var options []TarOption
 	options = append(options, ReplacePrefixPath("./", ""))
+	// dirMapping builds the header-name remap for a directory source:
+	// regular dirs remap their prefix; the context root (".") has no
+	// prefix, so entries just get the dest path prepended.
+	dirMapping := func(src, dest string) TarOption {
+		if src == "." || src == "./" {
+			return PathPrefixOption(strings.Trim(dest, "/"))
+		}
+		return ReplacePrefixPath(src, dest)
+	}
 	// ref: https://docs.docker.com/engine/reference/builder/#copy
 	switch len(sources) {
 	case 1:
@@ -233,7 +249,7 @@ func createBlob(absCtx string, dest string, sources []string) (string, error) {
 			if !strings.HasSuffix(source, "/") {
 				source += "/"
 			}
-			options = append(options, ReplacePrefixPath(source, dest))
+			options = append(options, dirMapping(source, dest))
 			sources[0] = source
 		} else if strings.HasSuffix(dest, "/") {
 			options = append(options, ReplacePrefixPath(source, filepath.Join(dest, filepath.Base(source))))
@@ -249,7 +265,7 @@ func createBlob(absCtx string, dest string, sources []string) (string, error) {
 				if !strings.HasSuffix(src, "/") {
 					src += "/"
 				}
-				options = append(options, ReplacePrefixPath(src, dest))
+				options = append(options, dirMapping(src, dest))
 				sources[i] = src
 			} else {
 				options = append(options, ReplacePrefixPath(src, filepath.Join(dest, filepath.Base(src))))

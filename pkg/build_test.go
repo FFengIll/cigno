@@ -274,6 +274,45 @@ COPY wild/*.txt /data/
 	}
 }
 
+func TestEngine_Build_DockerIgnore(t *testing.T) {
+	buildDir, err := filepath.Abs("./testdata/ignorectx")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// fixture .dockerignore: '*.log', 'sub/', '!keep.log'
+	df := `
+FROM scratch
+COPY . /data
+`
+
+	engine := NewEngine()
+	engine.BuildDir = buildDir
+
+	out := filepath.Join(t.TempDir(), "out.tar")
+	if err := engine.Build(strings.NewReader(df), OutFileOption(out, "ignore:test")); err != nil {
+		t.Fatal(err)
+	}
+
+	img, err := tarball.ImageFromPath(out, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := extractFileSet(t, img)
+
+	if _, ok := files["data/keep.txt"]; !ok {
+		t.Error("keep.txt should be included")
+	}
+	if _, ok := files["data/keep.log"]; !ok {
+		t.Error("keep.log should be included (negated pattern)")
+	}
+	for _, excluded := range []string{"data/drop.log", "data/sub/inner.txt"} {
+		if _, ok := files[excluded]; ok {
+			t.Errorf("%s should be excluded by .dockerignore", excluded)
+		}
+	}
+}
+
 func TestEngine_Build_InvalidBaseRef(t *testing.T) {
 	engine := NewEngine()
 	err := engine.Build(strings.NewReader("FROM this is not a ref\n"))
