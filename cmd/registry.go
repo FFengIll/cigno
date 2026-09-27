@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	registryAddr   string
+	registryAddr    string
 	registryStorage string
 )
 

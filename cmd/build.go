@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strings"
 
 	"cigno/pkg"
 
@@ -23,15 +24,15 @@ var envStrategy = []string{
 }
 
 var buildCmd = &cobra.Command{
-	Use: "build",
-	// Args: cobra.ExactArgs(1),
-	PreRun: doVerbose,
-	Run: func(cmd *cobra.Command, args []string) {
-
+	Use:   "build",
+	Short: "Build an image from a Dockerfile without a daemon",
+	RunE: func(cmd *cobra.Command, args []string) error {
 		tags, _ := cmd.Flags().GetStringArray("tag")
 		dockerfile, _ := cmd.Flags().GetString("file")
 		buildArgs, _ := cmd.Flags().GetStringArray("build-arg")
 		doPush, _ := cmd.Flags().GetBool("push")
+		outFile, _ := cmd.Flags().GetString("output-file")
+		noCache, _ := cmd.Flags().GetBool("no-cache")
 		logrus.WithField("dockerfile", dockerfile).
 			WithField("tag", tags).
 			WithField("args", buildArgs).
@@ -46,7 +47,12 @@ var buildCmd = &cobra.Command{
 		}
 		if !found {
 			cmd.Usage()
-			return
+			return fmt.Errorf("invalid env-strategy %q", es)
+		}
+
+		// validate only: parse the dockerfile and exit
+		if validateOnly, _ := cmd.Flags().GetBool("validate"); validateOnly {
+			return pkg.ValidateDockerfile(dockerfile)
 		}
 
 		// load dockerfile
@@ -54,7 +60,7 @@ var buildCmd = &cobra.Command{
 		var df afero.File
 		df, err := fs.Open(dockerfile)
 		if err != nil {
-			panic(err)
+			return fmt.Errorf("opening dockerfile %s: %w", dockerfile, err)
 		}
 		bs, _ := io.ReadAll(df)
 
@@ -63,18 +69,64 @@ var buildCmd = &cobra.Command{
 		// build with dockerfile
 		engine := pkg.NewEngine()
 
+		// context (build dir)
+		ctxDir, _ := cmd.Flags().GetString("context")
+		if ctxDir != "" {
+			engine.BuildDir = ctxDir
+		}
+
+		// build args override the ARG defaults declared in the dockerfile
+		for _, item := range buildArgs {
+			ss := strings.SplitN(item, "=", 2)
+			if len(ss) != 2 {
+				return fmt.Errorf("invalid build-arg %q, expected `key=value`", item)
+			}
+			engine.WithGlobalArg(ss[0], ss[1])
+		}
+
+		// base image mapping / folder contexts
+		for _, item := range imageBaseArray {
+			ss := strings.SplitN(item, "=", 2)
+			if len(ss) != 2 {
+				return fmt.Errorf("invalid image-base %q, expected `image=base`", item)
+			}
+			engine.AddBase(ss[0], ss[1])
+		}
+		for _, item := range folderArray {
+			ss := strings.SplitN(item, "=", 2)
+			if len(ss) != 2 {
+				return fmt.Errorf("invalid folder %q, expected `name=path`", item)
+			}
+			engine.AddFolder(ss[0], ss[1])
+		}
+
+		// local disk cache for base images
+		if !noCache {
+			if err := engine.InitCache(""); err != nil {
+				logrus.WithError(err).Warn("failed to init cache, continuing without")
+			}
+		}
+
 		var options []pkg.BuildOption
 		options = append(options, pkg.PrintHistoryOption())
-		if doPush {
+		if outFile != "" {
+			if len(tags) == 0 {
+				tags = []string{"cigno:latest"}
+			}
+			options = append(options, pkg.OutFileOption(outFile, tags[0]))
+		} else if doPush {
+			if len(tags) == 0 {
+				return fmt.Errorf("push requires at least one -t tag")
+			}
 			options = append(options, pkg.PushOption(tags))
+		} else {
+			logrus.Warn("no -o output or --push given, running as dry-run (no output)")
 		}
-		err = engine.Build(
+
+		return engine.Build(
 			bytes.NewReader(bs),
 			options...,
 		)
-		if err != nil {
-			panic(err)
-		}
 	},
 }
 
@@ -82,16 +134,16 @@ func init() {
 	flags := buildCmd.Flags()
 	flags.StringP("file", "f", "", "dockerfile")
 	buildCmd.MarkFlagRequired("file")
-	flags.StringVarP(&buildDir, "context", "c", buildDir, "")
+	flags.StringVarP(&buildDir, "context", "c", buildDir, "build context dir")
 	flags.StringArrayP("tag", "t", []string{}, "tag used in the `name:tag` format")
 	flags.BoolVar(&dryRun, "dry-run", false, "")
 	flags.BoolVarP(&validate, "validate", "v", false, "")
-	flags.StringArrayVar(&imageBaseArray, "image-base", []string{}, "")
-	flags.StringArrayVar(&tarballArray, "tarball", []string{}, "")
-	flags.StringArrayVar(&folderArray, "folder", []string{}, "")
-	flags.StringVarP(&outFile, "output-file", "o", "", "")
-	flags.StringArray("build-arg", []string{}, "build arg")
-	flags.Bool("push", false, "do push")
+	flags.StringArrayVar(&imageBaseArray, "image-base", []string{}, "map an image name to a base ref (`image=base`)")
+	flags.StringArrayVar(&folderArray, "folder", []string{}, "add a folder source (`name=path`)")
+	flags.StringVarP(&outFile, "output-file", "o", "", "save the image to a docker-load-able tar file instead of pushing")
+	flags.StringArray("build-arg", []string{}, "set a build arg (`key=value`)")
+	flags.Bool("push", false, "push the image to the registry")
 	flags.Bool("rebase-as-copy", false, "use rebase to replace `COPY --from`")
+	flags.Bool("no-cache", false, "disable the local base image cache")
 	flags.String("env-strategy", "keep", fmt.Sprintf("strategy to process env. (%s)", envStrategy))
 }

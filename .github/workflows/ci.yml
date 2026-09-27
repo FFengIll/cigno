@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Vet
+        run: |
+          go vet ./...
+          test -z "$(gofmt -l cmd pkg)" || { gofmt -l cmd pkg; exit 1; }
+
+      - name: Test (hermetic)
+        run: go test -v ./...
+
+      - name: Build
+        run: go build -o cigno ./
+
+      - name: Smoke (validate-only, no network)
+        run: ./cigno build --validate -f test/data/alpine.Dockerfile

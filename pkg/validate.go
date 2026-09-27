@@ -38,8 +38,8 @@ func (v *BaseImageValidator) Validate() error {
 
 // CopySourceValidator validates COPY sources
 type CopySourceValidator struct {
-	Sources    []string
-	From       string
+	Sources      []string
+	From         string
 	BuildContext string
 }
 

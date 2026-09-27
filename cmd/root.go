@@ -1,21 +1,15 @@
 package cmd
 
 import (
-	"bytes"
-	"io"
-	"path/filepath"
-	"strings"
+	"fmt"
 
-	"cigno/pkg"
+	"cigno/pkg/cache"
 
-	"github.com/sirupsen/logrus"
-	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 )
 
 var (
 	imageBaseArray []string
-	tarballArray   []string
 	folderArray    []string
 	dockerfile     = "./Dockerfile"
 	buildDir       = "."
@@ -24,89 +18,23 @@ var (
 	dryRun         = false
 	validate       = false
 	verbose        = false
+
+	// version is injected at release build time via -ldflags.
+	version = "dev"
 )
 
 var rootCmd = cobra.Command{
-	Run: func(cmd *cobra.Command, args []string) {
-		dryRun := tag == "" || dryRun
+	Use:     "cigno",
+	Version: version,
+	Short:   "Fast container image builder without a Docker daemon, using OCI operations",
+	Long: `Cigno builds container images without a Docker daemon.
 
-		// engine ready
-		var err error
-		buildDir, err = filepath.Abs(buildDir)
-		if err != nil {
-			panic(err)
-		}
-		engine := pkg.Engine{
-			BuildDir:     buildDir,
-			BuildContext: map[string]*pkg.BuildContext{},
-		}
+It assembles images from Dockerfiles using pure OCI operations (via crane),
+so base images are pulled layer-wise with local caching, and COPY --from
+supports image rebase and tarball sources. Designed for artifact image
+assembly and CI pipelines.
 
-		imageBase := map[string]string{}
-		for _, item := range imageBaseArray {
-			ss := strings.Split(item, "=")
-			imageBase[ss[0]] = ss[1]
-			engine.AddBase(ss[0], ss[1])
-		}
-		tarballPaths := map[string]string{}
-		for _, item := range tarballArray {
-			ss := strings.Split(item, "=")
-			tarballPaths[ss[0]] = ss[1]
-			engine.AddTarball(ss[0], ss[1])
-		}
-		folderPaths := map[string]string{}
-		for _, item := range folderArray {
-			ss := strings.Split(item, "=")
-			folderPaths[ss[0]] = ss[1]
-			engine.AddFolder(ss[0], ss[1])
-		}
-
-		logrus.Infof("image base: %s", imageBase)
-		logrus.Infof("tarball path: %s", tarballPaths)
-		logrus.Infof("folder path: %s", folderPaths)
-
-		var bs []byte
-		if dockerfile == "" {
-			buf := bytes.NewBuffer(bs)
-			writer := io.Writer(buf)
-			for idx := range args {
-				io.WriteString(writer, args[idx])
-				io.WriteString(writer, "\n")
-			}
-			bs = buf.Bytes()
-
-			logrus.Info("dockerfile command from args: \n", string(bs))
-		} else {
-			fs := afero.NewOsFs()
-			var df afero.File
-			df, err := fs.Open(dockerfile)
-			if err != nil {
-				panic(err)
-			}
-
-			bs, _ = io.ReadAll(df)
-		}
-
-		if validate {
-			return
-		}
-
-		var options []pkg.BuildOption
-		if outFile != "" {
-			options = append(options, pkg.OutFileOption(outFile, tag))
-		} else if dryRun {
-			// nothing for now
-		} else {
-			options = append(options, pkg.PushOption([]string{tag}))
-		}
-
-		err = engine.Build(
-			bytes.NewReader(bs),
-			options...,
-		)
-		if err != nil {
-			panic(err)
-		}
-	},
+Use "cigno build -f Dockerfile" to get started.`,
 }
 
 func Execute() error {
@@ -115,16 +43,53 @@ func Execute() error {
 
 func init() {
 	rootCmd.AddCommand(buildCmd)
+	rootCmd.AddCommand(cacheCmd)
 
 	flags := rootCmd.PersistentFlags()
 	flags.BoolVar(&verbose, "verbose", false, "run with verbose information")
-	// flags.StringVarP(&dockerfile, "dockerfile", "f", dockerfile, "dockerfile")
-	// flags.StringVarP(&buildDir, "context", "c", buildDir, "")
-	// flags.StringVarP(&tag, "tag", "t", "", "")
-	// flags.BoolVar(&dryRun, "dry-run", false, "")
-	// flags.BoolVarP(&validate, "validate", "v", false, "")
-	// flags.StringArrayVar(&imageBaseArray, "image-base", []string{}, "")
-	// flags.StringArrayVar(&tarballArray, "tarball", []string{}, "")
-	// flags.StringArrayVar(&folderArray, "folder", []string{}, "")
-	// flags.StringVarP(&outFile, "output-file", "o", "", "")
+}
+
+var cacheCmd = &cobra.Command{
+	Use:   "cache",
+	Short: "Manage the local base image cache",
+}
+
+var cacheListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List cached base image refs",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := cache.New("")
+		if err != nil {
+			return err
+		}
+		refs, err := c.List()
+		if err != nil {
+			return err
+		}
+		if len(refs) == 0 {
+			fmt.Println("(cache is empty)")
+			return nil
+		}
+		for _, ref := range refs {
+			fmt.Println(ref)
+		}
+		return nil
+	},
+}
+
+var cacheClearCmd = &cobra.Command{
+	Use:   "clear",
+	Short: "Remove all cached images",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := cache.New("")
+		if err != nil {
+			return err
+		}
+		return c.Clear()
+	},
+}
+
+func init() {
+	cacheCmd.AddCommand(cacheListCmd)
+	cacheCmd.AddCommand(cacheClearCmd)
 }

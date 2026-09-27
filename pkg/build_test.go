@@ -1,80 +1,465 @@
 package pkg
 
 import (
+	"archive/tar"
 	"bytes"
+	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/google/go-containerregistry/pkg/crane"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
+
+	"cigno/pkg/registry"
 )
 
-const testCopyCommand = `
-FROM alpine:3.16.2 as base
-COPY / /test/
-`
-
-const testFromCommand = `
-FROM alpine:3.16.2 as base
-`
-
-const testCopyFromCommand = `
-FROM alpine:3.16.2 as base
-COPY --from=tarball . /test/
-`
-
-const (
-	buildDir    = "./test/data"
-	outFile     = "./test/output/test.tar"
-	outDir      = "./test/output/"
-	tarballPath = "./test/data/tarball.tar"
-)
-
-func TestEngine_Build(t *testing.T) {
-	buildDir, err := filepath.Abs(buildDir)
+// startTestRegistry starts the embedded registry on an ephemeral port and
+// returns its address (e.g. 127.0.0.1:PORT).
+func startTestRegistry(t *testing.T) string {
+	t.Helper()
+	srv, err := registry.NewSimpleServer("127.0.0.1:0", t.TempDir())
 	if err != nil {
-		panic(err)
+		t.Fatalf("creating registry: %v", err)
 	}
-	engine := Engine{
-		BuildDir:     buildDir,
-		BuildContext: map[string]*BuildContext{},
+	if err := srv.Start(); err != nil {
+		t.Fatalf("starting registry: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Stop() })
+	return srv.GetAddr()
+}
+
+// pushBase pushes a simple image (one marker layer) to the test registry.
+func pushBase(t *testing.T, addr, repo, tag string) string {
+	t.Helper()
+	img, err := mutate.Append(empty.Image, mutate.Addendum{
+		Layer: newTarLayer(t, map[string]string{"base-file": "base"}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := fmt.Sprintf("%s/%s:%s", addr, repo, tag)
+	if err := crane.Push(img, ref, crane.Insecure); err != nil {
+		t.Fatalf("pushing base: %v", err)
+	}
+	return ref
+}
+
+func TestEngine_Build_LocalCopy(t *testing.T) {
+	addr := startTestRegistry(t)
+	baseRef := pushBase(t, addr, "test/base", "latest")
+
+	buildDir, err := filepath.Abs("./testdata")
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	engine.AddTarball("tarball", tarballPath)
+	df := fmt.Sprintf(`
+FROM %s
+COPY folder /data
+ENV PATH=/data:$PATH
+`, baseRef)
 
-	type config struct {
-		tag string
-		cmd string
+	engine := NewEngine()
+	engine.BuildDir = buildDir
+
+	out := filepath.Join(t.TempDir(), "out.tar")
+	if err := engine.Build(strings.NewReader(df), OutFileOption(out, "local-copy:test")); err != nil {
+		t.Fatal(err)
 	}
 
-	mapping := []config{
-		{"test-copy-from", testCopyFromCommand},
-		{"test-copy", testCopyCommand},
-		{"test-from", testFromCommand},
+	img, err := tarball.ImageFromPath(out, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
+	assertImageHasFileContent(t, img, "/data/file", "file content")
+	assertImageEnv(t, img, "PATH", "/data")
 
-	for _, item := range mapping {
-		buf := bytes.NewBufferString(item.cmd)
-		reader := io.Reader(buf)
-		var options []BuildOption
-		options = append(options, OutFileOption(filepath.Join(outDir, item.tag+".tar"), item.tag))
-		if err := engine.Build(reader, options...); err != nil {
-			t.Error(err)
+	// build must stamp a real creation time
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Created.IsZero() || cfg.Created.Year() < 2000 {
+		t.Errorf("image created time not stamped: %v", cfg.Created)
+	}
+	for _, h := range cfg.History {
+		if h.CreatedBy == "ENV PATH=/data:$PATH" && (h.Created.IsZero() || h.Created.Year() < 2000) {
+			t.Errorf("history entry created time not stamped: %+v", h)
 		}
 	}
 }
 
-func TestParseDockerFile(t *testing.T) {
-	buf := bytes.NewBufferString(testCopyCommand)
-	reader := io.Reader(buf)
-	stages, _, err := ParseDockerFile(reader)
+func TestEngine_Build_FromScratch(t *testing.T) {
+	buildDir, err := filepath.Abs("./testdata")
 	if err != nil {
-		return
+		t.Fatal(err)
 	}
 
-	// loop
-	for _, stage := range stages {
-		t.Log(stage)
-		for _, cmd := range stage.Commands {
-			t.Log(cmd)
+	df := `
+FROM scratch
+COPY folder /data
+`
+
+	engine := NewEngine()
+	engine.BuildDir = buildDir
+
+	out := filepath.Join(t.TempDir(), "out.tar")
+	if err := engine.Build(strings.NewReader(df), OutFileOption(out, "scratch:test")); err != nil {
+		t.Fatal(err)
+	}
+
+	img, err := tarball.ImageFromPath(out, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertImageHasFileContent(t, img, "/data/file", "file content")
+}
+
+func TestEngine_Build_CopySingleFile(t *testing.T) {
+	buildDir, err := filepath.Abs("./testdata")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// single file source must land at the exact dest path
+	df := `
+FROM scratch
+COPY folder/file /marker
+`
+
+	engine := NewEngine()
+	engine.BuildDir = buildDir
+
+	out := filepath.Join(t.TempDir(), "out.tar")
+	if err := engine.Build(strings.NewReader(df), OutFileOption(out, "file:test")); err != nil {
+		t.Fatal(err)
+	}
+
+	img, err := tarball.ImageFromPath(out, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertImageHasFileContent(t, img, "/marker", "file content")
+}
+
+func TestEngine_Build_MultiStageCopyFromStage(t *testing.T) {
+	addr := startTestRegistry(t)
+	xRef := pushBase(t, addr, "test/x", "latest")
+	yRef := pushBase(t, addr, "test/y", "latest")
+
+	buildDir, err := filepath.Abs("./testdata")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// multi-stage: build in stage `builder`, copy paths out into the
+	// final stage (docker semantics — path-level, not layer rebase)
+	df := fmt.Sprintf(`
+FROM %s AS builder
+COPY folder /build
+FROM %s
+COPY --from=builder /build /app
+`, xRef, yRef)
+
+	engine := NewEngine()
+	engine.BuildDir = buildDir
+
+	out := filepath.Join(t.TempDir(), "out.tar")
+	if err := engine.Build(strings.NewReader(df), OutFileOption(out, "multi:test")); err != nil {
+		t.Fatal(err)
+	}
+
+	img, err := tarball.ImageFromPath(out, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertImageHasFileContent(t, img, "/app/file", "file content")
+	// the final stage's own base must be present, the builder's base must not
+	assertImageHasFileContent(t, img, "/base-file", "base")
+	files := extractFileSet(t, img)
+	if _, ok := files["build/file"]; ok {
+		t.Error("builder stage filesystem leaked into final image (/build)")
+	}
+
+	yImg, err := crane.Pull(yRef, crane.Insecure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	yLayers, _ := yImg.Layers()
+	appLayers, _ := img.Layers()
+	if len(appLayers) != len(yLayers)+1 {
+		t.Errorf("expected %d layers (final base + 1 copied layer), got %d", len(yLayers)+1, len(appLayers))
+	}
+}
+
+func TestEngine_Build_CopyFromRebase(t *testing.T) {
+	addr := startTestRegistry(t)
+	baseRef := pushBase(t, addr, "test/base", "latest")
+
+	buildDir, err := filepath.Abs("./testdata")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// build a component image on top of base, then push it for rebase use
+	compEngine := NewEngine()
+	compEngine.BuildDir = buildDir
+	compDF := fmt.Sprintf(`
+FROM %s
+COPY folder /comp
+`, baseRef)
+	compRef := fmt.Sprintf("%s/test/comp:latest", addr)
+	if err := compEngine.Build(strings.NewReader(compDF), PushOption([]string{compRef})); err != nil {
+		t.Fatalf("building component: %v", err)
+	}
+
+	// assemble: COPY --from the component brings its diff layers over base.
+	// NOTE: rebase copies layers verbatim (component assembly semantics),
+	// so the component's paths are preserved as-is.
+	appEngine := NewEngine()
+	appEngine.BuildDir = buildDir
+	appDF := fmt.Sprintf(`
+FROM %s
+COPY --from=%s / /
+`, baseRef, compRef)
+	out := filepath.Join(t.TempDir(), "out.tar")
+	if err := appEngine.Build(strings.NewReader(appDF), OutFileOption(out, "app:test")); err != nil {
+		t.Fatal(err)
+	}
+
+	img, err := tarball.ImageFromPath(out, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertImageHasFileContent(t, img, "/comp/file", "file content")
+	assertImageHasFileContent(t, img, "/base-file", "base")
+
+	// the app must not duplicate base layers
+	baseImg, err := crane.Pull(baseRef, crane.Insecure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseLayers, _ := baseImg.Layers()
+	appLayers, _ := img.Layers()
+	if len(appLayers) != len(baseLayers)+1 {
+		t.Errorf("expected %d layers (base + 1 diff), got %d", len(baseLayers)+1, len(appLayers))
+	}
+}
+
+func TestEngine_Build_CopyWildcard(t *testing.T) {
+	buildDir, err := filepath.Abs("./testdata")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	df := `
+FROM scratch
+COPY wild/*.txt /data/
+`
+
+	engine := NewEngine()
+	engine.BuildDir = buildDir
+
+	out := filepath.Join(t.TempDir(), "out.tar")
+	if err := engine.Build(strings.NewReader(df), OutFileOption(out, "wild:test")); err != nil {
+		t.Fatal(err)
+	}
+
+	img, err := tarball.ImageFromPath(out, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertImageHasFileContent(t, img, "/data/a.txt", "a\n")
+	assertImageHasFileContent(t, img, "/data/b.txt", "b\n")
+	files := extractFileSet(t, img)
+	if _, ok := files["data/c.log"]; ok {
+		t.Error("c.log should not match *.txt")
+	}
+
+	// a wildcard matching nothing must fail the build
+	engine2 := NewEngine()
+	engine2.BuildDir = buildDir
+	err = engine2.Build(strings.NewReader("FROM scratch\nCOPY wild/*.nothing /data/\n"))
+	if err == nil {
+		t.Error("expected no-match wildcard to fail")
+	}
+}
+
+func TestEngine_Build_DockerIgnore(t *testing.T) {
+	buildDir, err := filepath.Abs("./testdata/ignorectx")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// fixture .dockerignore: '*.log', 'sub/', '!keep.log'
+	df := `
+FROM scratch
+COPY . /data
+`
+
+	engine := NewEngine()
+	engine.BuildDir = buildDir
+
+	out := filepath.Join(t.TempDir(), "out.tar")
+	if err := engine.Build(strings.NewReader(df), OutFileOption(out, "ignore:test")); err != nil {
+		t.Fatal(err)
+	}
+
+	img, err := tarball.ImageFromPath(out, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := extractFileSet(t, img)
+
+	if _, ok := files["data/keep.txt"]; !ok {
+		t.Error("keep.txt should be included")
+	}
+	if _, ok := files["data/keep.log"]; !ok {
+		t.Error("keep.log should be included (negated pattern)")
+	}
+	for _, excluded := range []string{"data/drop.log", "data/sub/inner.txt"} {
+		if _, ok := files[excluded]; ok {
+			t.Errorf("%s should be excluded by .dockerignore", excluded)
 		}
 	}
+}
+
+func TestEngine_Build_CopyChownChmod(t *testing.T) {
+	buildDir, err := filepath.Abs("./testdata")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	df := `
+FROM scratch
+COPY --chown=1000:2000 --chmod=0755 folder/file /marker
+`
+
+	engine := NewEngine()
+	engine.BuildDir = buildDir
+
+	out := filepath.Join(t.TempDir(), "out.tar")
+	if err := engine.Build(strings.NewReader(df), OutFileOption(out, "perm:test")); err != nil {
+		t.Fatal(err)
+	}
+
+	img, err := tarball.ImageFromPath(out, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := mutate.Extract(img)
+	defer r.Close()
+	tr := tar.NewReader(r)
+	found := false
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimPrefix(hdr.Name, "/") == "marker" {
+			found = true
+			if hdr.Uid != 1000 || hdr.Gid != 2000 {
+				t.Errorf("uid/gid = %d/%d, want 1000/2000", hdr.Uid, hdr.Gid)
+			}
+			if hdr.Mode != 0o755 {
+				t.Errorf("mode = %o, want 755", hdr.Mode)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("file /marker not found")
+	}
+}
+
+func TestEngine_Build_RunRejected(t *testing.T) {
+	engine := NewEngine()
+	err := engine.Build(strings.NewReader("FROM scratch\nRUN echo hi\n"))
+	if err == nil {
+		t.Fatal("RUN must be rejected")
+	}
+	if !strings.Contains(err.Error(), "not supported") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestEngine_Build_InvalidBaseRef(t *testing.T) {
+	engine := NewEngine()
+	err := engine.Build(strings.NewReader("FROM this is not a ref\n"))
+	if err == nil {
+		t.Error("expected invalid base ref to fail")
+	}
+}
+
+func TestEngine_Build_ArgExpansion(t *testing.T) {
+	buildDir, err := filepath.Abs("./testdata")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	df := `
+ARG VERSION=default-version
+FROM scratch
+ARG VERSION
+COPY folder/file /marker-${VERSION}
+`
+
+	engine := NewEngine()
+	engine.BuildDir = buildDir
+
+	out := filepath.Join(t.TempDir(), "out.tar")
+	if err := engine.Build(strings.NewReader(df), OutFileOption(out, "arg:test")); err != nil {
+		t.Fatal(err)
+	}
+
+	img, err := tarball.ImageFromPath(out, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertImageHasFileContent(t, img, "/marker-default-version", "file content")
+}
+
+func TestParseDockerFile(t *testing.T) {
+	buf := bytes.NewBufferString(`
+FROM alpine:3.16.2 as base
+COPY / /test/
+ENV A=1
+`)
+	stages, _, err := ParseDockerFile(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stages) != 1 {
+		t.Fatalf("expected 1 stage, got %d", len(stages))
+	}
+	if len(stages[0].Commands) != 2 {
+		t.Errorf("expected 2 commands, got %d", len(stages[0].Commands))
+	}
+}
+
+// assertImageEnv checks that the image config contains `key` with `substring`.
+func assertImageEnv(t *testing.T, img v1.Image, key, substring string) {
+	t.Helper()
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, env := range cfg.Config.Env {
+		if strings.HasPrefix(env, key+"=") {
+			if strings.Contains(env, substring) {
+				return
+			}
+			t.Errorf("env %s does not contain %q: %s", key, substring, env)
+			return
+		}
+	}
+	t.Errorf("env %s not found in config: %v", key, cfg.Config.Env)
 }

@@ -35,7 +35,8 @@ go.work
 cigno
 *.tar
 *.tar.gz
-registry/
+/registry/
+.registry-data/
 test/output/
 scripts/case/
 

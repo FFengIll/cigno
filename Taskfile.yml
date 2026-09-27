@@ -3,35 +3,65 @@
 version: '3'
 
 vars:
-  GREETING: Hello, World!
+  BINARY: cigno
+  REGISTRY_ADDR: '127.0.0.1:15000'
+  REGISTRY_STORAGE: '{{.USER_WORKING_DIR}}/.registry-data'
 
 tasks:
   default:
     cmds:
-      - echo "{{.GREETING}}"
+      - task --list
     silent: true
 
   fmt:
+    desc: Tidy modules and format code
     cmds:
       - go mod tidy
+      - gofmt -w cmd pkg
 
   build:
+    desc: Build the cigno binary
     cmds:
-      - go build -o cigno ./
-      - chmod +x cigno
+      - go build -o {{.BINARY}} ./
 
   test:
+    desc: Run all tests (hermetic: no network / no docker needed)
     cmds:
-      - echo "WIP"
+      - go test ./...
+
+  test-verbose:
+    desc: Run tests with verbose output
+    cmds:
+      - go test -v ./...
+
+  vet:
+    desc: Static checks (vet + gofmt diff)
+    cmds:
+      - go vet ./...
+      - test -z "$(gofmt -l cmd pkg)" || gofmt -l cmd pkg
+
+  validate:
+    desc: Parse a dockerfile without building (usage: task validate DF=path/to/Dockerfile)
+    cmds:
+      - go run . build --validate -f {{.DF | default "./Dockerfile"}}
 
   registry:
+    desc: Start the embedded registry for manual experiments
     cmds:
-      - mkdir -p registry
-      - docker run -d -p 15000:5000 --restart always -v ./registry:/var/lib/registry/docker/registry/ --name registry registry:2 || echo "done"
-      - docker start registry
+      - go run . registry start --addr {{.REGISTRY_ADDR}} --storage {{.REGISTRY_STORAGE}}
 
-  demo:
+  e2e-demo:
+    desc: End-to-end demo — registry + build + save tar (dogfood)
+    deps: [build]
     cmds:
-      - docker pull alpine:3.17
-      - docker tag alpine:3.17 localhost:15000/alpine:3.17
-      - docker push localhost:15000/alpine:3.17
+      - mkdir -p {{.REGISTRY_STORAGE}}
+      - ./{{.BINARY}} registry start --addr {{.REGISTRY_ADDR}} --storage {{.REGISTRY_STORAGE}} &
+      - sleep 1
+      - cd test/data && ../../{{.BINARY}} build -f alpine.Dockerfile -c . -o /tmp/cigno-demo.tar || true
+      - kill %1 || true
+
+  clean:
+    desc: Remove build artifacts and local registry data
+    cmds:
+      - rm -f {{.BINARY}}
+      - rm -rf {{.REGISTRY_STORAGE}}
