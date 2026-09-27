@@ -63,6 +63,22 @@ func ChownOption(uid, gid int) TarOption {
 	}
 }
 
+// ChownUIDOption sets only the numeric uid, leaving gid untouched.
+func ChownUIDOption(uid int) TarOption {
+	return func(hdr *tar.Header) error {
+		hdr.Uid = uid
+		return nil
+	}
+}
+
+// ChownGIDOption sets only the numeric gid, leaving uid untouched.
+func ChownGIDOption(gid int) TarOption {
+	return func(hdr *tar.Header) error {
+		hdr.Gid = gid
+		return nil
+	}
+}
+
 func ChownNameOption(uname, gname string) TarOption {
 	return func(hdr *tar.Header) error {
 		hdr.Uname = uname

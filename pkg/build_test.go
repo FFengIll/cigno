@@ -1,8 +1,10 @@
 package pkg
 
 import (
+	"archive/tar"
 	"bytes"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -324,6 +326,57 @@ COPY . /data
 		if _, ok := files[excluded]; ok {
 			t.Errorf("%s should be excluded by .dockerignore", excluded)
 		}
+	}
+}
+
+func TestEngine_Build_CopyChownChmod(t *testing.T) {
+	buildDir, err := filepath.Abs("./testdata")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	df := `
+FROM scratch
+COPY --chown=1000:2000 --chmod=0755 folder/file /marker
+`
+
+	engine := NewEngine()
+	engine.BuildDir = buildDir
+
+	out := filepath.Join(t.TempDir(), "out.tar")
+	if err := engine.Build(strings.NewReader(df), OutFileOption(out, "perm:test")); err != nil {
+		t.Fatal(err)
+	}
+
+	img, err := tarball.ImageFromPath(out, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := mutate.Extract(img)
+	defer r.Close()
+	tr := tar.NewReader(r)
+	found := false
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimPrefix(hdr.Name, "/") == "marker" {
+			found = true
+			if hdr.Uid != 1000 || hdr.Gid != 2000 {
+				t.Errorf("uid/gid = %d/%d, want 1000/2000", hdr.Uid, hdr.Gid)
+			}
+			if hdr.Mode != 0o755 {
+				t.Errorf("mode = %o, want 755", hdr.Mode)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("file /marker not found")
 	}
 }
 

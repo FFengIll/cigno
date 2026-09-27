@@ -203,7 +203,7 @@ func (engine *Engine) AllocLocalEnv(stage *instructions.Stage, env []string) {
 //   - single dir source: contents of the dir go under dest
 //   - single file source: file lands at dest (or dest/basename if dest is a dir)
 //   - multiple sources: dest must act as a directory
-func createBlob(absCtx string, dest string, sources []string) (string, error) {
+func createBlob(absCtx string, dest string, sources []string, extra ...TarOption) (string, error) {
 	tb := NewTarball(absCtx)
 
 	// honor .dockerignore from the build context root
@@ -273,7 +273,7 @@ func createBlob(absCtx string, dest string, sources []string) (string, error) {
 		}
 	}
 
-	if err := tb.tar(blob, sources, options...); err != nil {
+	if err := tb.tar(blob, sources, append(options, extra...)...); err != nil {
 		return "", fmt.Errorf("archiving sources %v: %w", sources, err)
 	}
 

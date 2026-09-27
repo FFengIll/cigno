@@ -22,6 +22,24 @@ import (
 	archive "github.com/vbatts/tar-split/archive/tar"
 )
 
+// copyHeaderOptions builds tar header options for COPY/ADD --chown/--chmod.
+func (engine *Engine) copyHeaderOptions(chown, chmod string) ([]TarOption, error) {
+	chown = engine.expandCurArg(chown)
+	chmod = engine.expandCurArg(chmod)
+	opts, err := parseCopyChown(chown)
+	if err != nil {
+		return nil, err
+	}
+	modOpt, err := parseCopyChmod(chmod)
+	if err != nil {
+		return nil, err
+	}
+	if modOpt != nil {
+		opts = append(opts, modOpt)
+	}
+	return opts, nil
+}
+
 // doCopy
 // COPY --from=image /path1 /path2 --chown=xx:xx --chmod=xxx
 // COPY --from=image --base=image / /path2 --chown=xx:xx --chmod=xxx
@@ -38,8 +56,13 @@ func (engine *Engine) doCopy(cmd *instructions.CopyCommand, img v1.Image) (v1.Im
 		sources[i] = engine.expandCurArg(src)
 	}
 
+	// --chown/--chmod apply to every archived entry (verbatim, like docker)
+	extra, err := engine.copyHeaderOptions(cmd.Chown, cmd.Chmod)
+	if err != nil {
+		return nil, err
+	}
+
 	// expand wildcards in sources, e.g. `COPY dist/*.txt /data/`
-	var err error
 	sources, err = expandWildcards(engine.BuildDir, sources)
 	if err != nil {
 		return nil, err
@@ -48,7 +71,7 @@ func (engine *Engine) doCopy(cmd *instructions.CopyCommand, img v1.Image) (v1.Im
 	// copy via local file system
 
 	// FIXME: for now, we do not extract special files, but copy each blob above base image (just like rebase)
-	tarPath, err := createBlob(engine.BuildDir, dest, sources)
+	tarPath, err := createBlob(engine.BuildDir, dest, sources, extra...)
 	if err != nil {
 		return nil, err
 	}
@@ -72,15 +95,25 @@ func (engine *Engine) doCopyFrom(cmd *instructions.CopyCommand, img v1.Image) (v
 	orig := cmd.From
 	ref := engine.getRef(orig)
 
+	extra, err := engine.copyHeaderOptions(cmd.Chown, cmd.Chmod)
+	if err != nil {
+		return nil, err
+	}
+
 	// a built stage wins over any context mapping: docker semantics —
 	// copy the given paths out of the stage's filesystem
 	if stageImg, ok := engine.BuiltStages[orig]; ok {
-		return engine.copyFromImageFS(cmd, stageImg, img)
+		return engine.copyFromImageFS(cmd, stageImg, img, extra)
 	}
 
 	switch ref.Type {
 	case ImageRef:
 		orig = ref.Path
+
+		// verbatim layer rebase cannot rewrite headers inside existing layers
+		if len(extra) > 0 {
+			logrus.Warn("--chown/--chmod are ignored with image-ref rebase (layers are copied verbatim)")
+		}
 
 		//
 		origImg, err := crane.Pull(orig, craneOptions(orig)...)
@@ -104,9 +137,8 @@ func (engine *Engine) doCopyFrom(cmd *instructions.CopyCommand, img v1.Image) (v
 			}
 		}
 
-		// skip pulling scratch as it's a special reserved empty image
+		// scratch has no layers, so all layers from origImg are the diff
 		if base == "scratch" {
-			// scratch has no layers, so all layers from origImg are the diff
 			origConfig, err := origImg.ConfigFile()
 			if err != nil {
 				return nil, err
@@ -148,6 +180,7 @@ func (engine *Engine) doCopyFrom(cmd *instructions.CopyCommand, img v1.Image) (v
 		options = append(options, ReplacePrefixPath("./", ""))
 		options = append(options, ReplacePrefixPath(cmd.Sources()[0], cmd.Dest()))
 		options = append(options, ReplacePrefixPath("/", ""))
+		options = append(options, extra...)
 		blobPath, err := copyBlob("", tarballPath, options...)
 		if err != nil {
 			return nil, err
@@ -172,7 +205,7 @@ func (engine *Engine) doCopyFrom(cmd *instructions.CopyCommand, img v1.Image) (v
 // copyFromImageFS copies paths out of a built stage's filesystem
 // (docker `COPY --from=<stage>` semantics): the stage image is flattened
 // and the requested paths are archived into a new layer on dst.
-func (engine *Engine) copyFromImageFS(cmd *instructions.CopyCommand, src v1.Image, dst v1.Image) (v1.Image, error) {
+func (engine *Engine) copyFromImageFS(cmd *instructions.CopyCommand, src v1.Image, dst v1.Image, extra []TarOption) (v1.Image, error) {
 	// flatten the stage filesystem to a temp tar
 	tmp := fmt.Sprintf("/tmp/cigno-stagefs-%s.tar", uuid.Generate())
 	f, err := fs.Create(tmp)
@@ -201,6 +234,7 @@ func (engine *Engine) copyFromImageFS(cmd *instructions.CopyCommand, src v1.Imag
 		// to relative first, then remap source -> dest
 		options = append(options, ReplacePrefixPath("/", ""))
 		options = append(options, ReplacePrefixPath(srcName, destName))
+		options = append(options, extra...)
 
 		blobPath, err := copyBlob("", tmp, options...)
 		if err != nil {
@@ -335,30 +369,35 @@ func expandWildcards(buildDir string, sources []string) ([]string, error) {
 // 1. Supports URLs (http, https) - downloads and adds as file
 // 2. Automatically extracts local tar files
 func (engine *Engine) doAdd(cmd *instructions.AddCommand, img v1.Image) (v1.Image, error) {
+	// --chown/--chmod, same semantics as COPY
+	extra, err := engine.copyHeaderOptions(cmd.Chown, cmd.Chmod)
+	if err != nil {
+		return nil, err
+	}
+
 	sources := cmd.Sources()
 	dest := cmd.Dest()
 
 	// If there's a URL source, we can only handle one source at a time
 	var tarPath string
-	var err error
 
 	// Check if source is a URL
 	if len(sources) == 1 && isURL(sources[0]) {
-		tarPath, err = engine.downloadURL(sources[0], dest)
+		tarPath, err = engine.downloadURL(sources[0], dest, extra)
 		if err != nil {
 			return nil, fmt.Errorf("downloading URL %s: %w", sources[0], err)
 		}
 	} else {
 		// Check if source is a tar file that should be extracted
 		if len(sources) == 1 && isTarFile(sources[0]) {
-			tarPath, err = engine.extractTar(sources[0], dest)
+			tarPath, err = engine.extractTar(sources[0], dest, extra)
 			if err != nil {
 				return nil, fmt.Errorf("extracting tar file %s: %w", sources[0], err)
 			}
 		} else {
 			// Same as COPY for local files
 			var err error
-			tarPath, err = createBlob(engine.BuildDir, dest, sources)
+			tarPath, err = createBlob(engine.BuildDir, dest, sources, extra...)
 			if err != nil {
 				return nil, err
 			}
@@ -401,7 +440,7 @@ func isTarFile(source string) bool {
 }
 
 // downloadURL downloads a file from URL and returns the path to the downloaded file
-func (engine *Engine) downloadURL(urlStr, dest string) (string, error) {
+func (engine *Engine) downloadURL(urlStr, dest string, extra []TarOption) (string, error) {
 	// Download to temp file
 	tempFile, err := os.CreateTemp("", "cigno-download-*")
 	if err != nil {
@@ -454,6 +493,7 @@ func (engine *Engine) downloadURL(urlStr, dest string) (string, error) {
 		ReplacePrefixPath("./", ""),
 		ReplacePrefixPath(filename, strings.TrimPrefix(tarDest, "/")),
 	}
+	options = append(options, extra...)
 
 	err = tb.tar(blob, []string{downloadedPath}, options...)
 	if err != nil {
@@ -464,7 +504,7 @@ func (engine *Engine) downloadURL(urlStr, dest string) (string, error) {
 }
 
 // extractTar extracts a local tar file and returns the path to the extracted tarball
-func (engine *Engine) extractTar(source, dest string) (string, error) {
+func (engine *Engine) extractTar(source, dest string, extra []TarOption) (string, error) {
 	// Resolve source path relative to build dir
 	srcPath := source
 	if !filepath.IsAbs(source) {
@@ -479,7 +519,7 @@ func (engine *Engine) extractTar(source, dest string) (string, error) {
 
 	if info.IsDir() {
 		// Directory, just copy it like COPY does
-		return createBlob(engine.BuildDir, dest, []string{source})
+		return createBlob(engine.BuildDir, dest, []string{source}, extra...)
 	}
 
 	// It's a file, check if it's a tar file by opening it
@@ -494,7 +534,7 @@ func (engine *Engine) extractTar(source, dest string) (string, error) {
 	_, err = tr.Next()
 	if err != nil {
 		// Not a valid tar file, just copy it like COPY does
-		return createBlob(engine.BuildDir, dest, []string{source})
+		return createBlob(engine.BuildDir, dest, []string{source}, extra...)
 	}
 
 	// Valid tar file - create a new tarball with extracted contents
@@ -510,6 +550,7 @@ func (engine *Engine) extractTar(source, dest string) (string, error) {
 	options := []TarOption{
 		ReplacePrefixPath("./", strings.TrimPrefix(destDir, "/")),
 	}
+	options = append(options, extra...)
 
 	err = tb.Copy(blobPath, srcPath, options...)
 	if err != nil {
