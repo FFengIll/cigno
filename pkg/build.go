@@ -132,11 +132,11 @@ func (engine *Engine) Build(cmdReader io.Reader, options ...BuildOption) error {
 				}
 				break
 			case command.Run:
-				// do not run in a daemon, overlay fs or any other isolation
-				// we do only support some `scope in control` cmd and files, e.g. wget, tar, tee
-				// furthermore, use a temporary path to hold root fs structure if possible
-				// then we archive the results into a tar file as blob to append
-				logrus.Warn("RUN command is not yet implemented")
+				// cigno is an assembly builder: it never executes commands.
+				// A RUN here means the Dockerfile is not artifact-shaped.
+				return fmt.Errorf("RUN is not supported (cigno never executes commands by design): " +
+					"prepare artifacts before the build and COPY/ADD them in, " +
+					"or use a general builder (buildkit/kaniko) for RUN-based Dockerfiles")
 			case command.Env:
 				// here is an easy way to append ENV,
 				// and to support `+=`, we should be careful to merge original value and plus value.

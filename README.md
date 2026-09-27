@@ -84,7 +84,7 @@ Copy layers from another image, supporting component assembly:
 
 ```dockerfile
 FROM alpine:latest AS base
-RUN apk add --no-cache ca-certificates
+COPY certs/ca-certificates.crt /etc/ssl/certs/
 
 FROM scratch AS app
 COPY --from=base / /

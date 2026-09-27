@@ -380,6 +380,17 @@ COPY --chown=1000:2000 --chmod=0755 folder/file /marker
 	}
 }
 
+func TestEngine_Build_RunRejected(t *testing.T) {
+	engine := NewEngine()
+	err := engine.Build(strings.NewReader("FROM scratch\nRUN echo hi\n"))
+	if err == nil {
+		t.Fatal("RUN must be rejected")
+	}
+	if !strings.Contains(err.Error(), "not supported") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestEngine_Build_InvalidBaseRef(t *testing.T) {
 	engine := NewEngine()
 	err := engine.Build(strings.NewReader("FROM this is not a ref\n"))

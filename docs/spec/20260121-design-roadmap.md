@@ -1,7 +1,11 @@
 # Cigno Design Spec: Current State and Future Roadmap
 
 **Date**: 2026-01-21
-**Status**: Draft
+**Status**: Draft — **partially superseded** (2026-09): RUN support, including the
+"limited whitelist" in §4.1, is dropped by design; interactive session mode (§5.2)
+and record management (§4.3) are abandoned. See
+[20260926-assessment-and-direction.md](20260926-assessment-and-direction.md).
+Still valid: config-command completion, rebase direction, validation, caching.
 
 ## 1. Current State Analysis
 
